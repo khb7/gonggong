@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(grep:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(pg_isready:*)",
+      "Bash(cmd:*)",
+      "Bash(powershell:*)",
+      "Bash(\"/c/Program Files/PostgreSQL/17/bin/psql\":*)"
+    ]
+  }
+}
