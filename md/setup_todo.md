@@ -22,7 +22,7 @@ CREATE DATABASE gonggong;
 
 ## 2단계. `.env` 실제 값으로 수정
 
-`C:\Users\Lenovo\gonggong\.env` 파일을 열어서 아래처럼 수정:
+`C:\Users\onebe\gonggong\.env` 파일을 열어서 아래처럼 수정:
 
 ```
 DATABASE_URL=postgresql+asyncpg://유저명:비밀번호@localhost:5432/gonggong
@@ -43,7 +43,7 @@ G2B_API_KEY=공공데이터포털에서_발급받은_키
 ## 3단계. DB 마이그레이션 실행
 
 ```bash
-cd C:\Users\Lenovo\gonggong
+cd C:\Users\onebe\gonggong
 python -m alembic upgrade head
 ```
 
@@ -65,7 +65,7 @@ Running upgrade 15711de594d0 -> a3f9e1c72b08, add project_id unique constraint
 ## 4단계. 백필 실행 (과거 데이터 적재)
 
 ```bash
-cd C:\Users\Lenovo\gonggong
+cd C:\Users\onebe\gonggong
 python scripts/backfill.py --start 20250101 --end 20260314
 ```
 
@@ -85,7 +85,7 @@ SELECT fallback_level, COUNT(*) FROM ... -- API 호출로 확인
 
 서버 실행:
 ```bash
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
 
 테스트 요청:
@@ -110,8 +110,8 @@ curl -X POST http://localhost:8000/api/v1/bid/calculate \
    - 트리거: `매일` → 시작: `새벽 02:00`
    - 동작: `프로그램 시작`
      - 프로그램: `python`
-     - 인수: `C:\Users\Lenovo\gonggong\scripts\daily_collect.py`
-     - 시작 위치: `C:\Users\Lenovo\gonggong`
+     - 인수: `C:\Users\onebe\gonggong\scripts\daily_collect.py`
+     - 시작 위치: `C:\Users\onebe\gonggong`
 4. 저장 후 `지금 실행`으로 테스트
 
 ---

@@ -3,15 +3,30 @@ app/main.py
 FastAPI 앱 진입점
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.v1.bidding import router as bidding_router
 from app.api.v1.stats import router as stats_router
+from app.jobs.scheduler import scheduler, setup_scheduler
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_scheduler()
+    scheduler.start()
+    yield
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
 
 app = FastAPI(
     title="공공입찰 통계 엔진",
     description="나라장터 입찰 데이터 기반 사정률 예측 및 투찰가 계산 API",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # React 개발 서버(localhost:5173 등) 허용

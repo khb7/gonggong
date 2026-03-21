@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     # 빈 문자열이면 MockG2BFetcher 자동 사용
     G2B_API_KEY: str = ""
 
+    # 매일 자동 수집 시각 (한국 시간 기준, 0~23)
+    COLLECT_HOUR: int = 3
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @property

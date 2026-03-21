@@ -8,6 +8,7 @@ pydantic-settings
 numpy
 scipy
 python-dotenv
+apscheduler
 pytest
 pytest-asyncio
 httpx

@@ -70,7 +70,7 @@ class G2BCollector:
         chunk_num = 0
 
         records = []
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=60.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             current = start_date
             while current <= end_date:
@@ -122,15 +122,36 @@ class G2BCollector:
             logger.debug(f"bssAmt/fnlSucsfAmt 없음으로 {skip_count}건 스킵")
         return records
 
-    @staticmethod
-    def _get_response_body(body: dict) -> dict | None:
-        """G2B API 응답에서 response.body 추출. 에러 응답이면 None 반환."""
+    # 일일/월별 트래픽 한도 초과 코드 (공공데이터포털 공통)
+    _QUOTA_CODES = {"22", "30", "31", "32"}
+
+    @classmethod
+    def _get_response_body(cls, body: dict) -> dict | None:
+        """G2B API 응답에서 response.body 추출.
+
+        - 정상(00): body 반환
+        - 한도 초과(22/30/31/32): QuotaExceededError 발생 → 즉시 중단
+        - 기타 에러: None 반환 (warning 로그)
+        """
         resp = body.get("response") or body.get("nkoneps.com.response.ResponseError", {})
-        result_code = resp.get("header", {}).get("resultCode", "")
+        header = resp.get("header", {})
+        result_code = header.get("resultCode", "")
+        result_msg = header.get("resultMsg", "")
+
+        if result_code in cls._QUOTA_CODES:
+            raise QuotaExceededError(
+                f"API 일일 한도 초과 (code={result_code}, msg={result_msg}). "
+                "내일 다시 실행하거나 공공데이터포털에서 한도를 확인하세요."
+            )
         if result_code not in ("00", ""):
-            logger.warning(f"API 에러 {result_code}: {resp.get('header', {}).get('resultMsg', '')}")
+            logger.warning(f"API 에러 {result_code}: {result_msg}")
             return None
         return resp.get("body", {})
+
+
+class QuotaExceededError(RuntimeError):
+    """공공데이터포털 일일 API 한도 초과."""
+    pass
 
     async def _fetch_scsbid_all_types(
         self,
@@ -209,16 +230,22 @@ class G2BCollector:
         async def fetch_page(page: int) -> list[dict]:
             async with semaphore:
                 for attempt in range(5):
-                    r = await client.get(SCSBID_ENDPOINT, params={**_base_params(), "pageNo": str(page)})
+                    try:
+                        r = await client.get(SCSBID_ENDPOINT, params={**_base_params(), "pageNo": str(page)})
+                    except httpx.ReadTimeout:
+                        wait = 2 ** attempt
+                        logger.warning(f"ReadTimeout (page {page}), {wait}초 후 재시도")
+                        await asyncio.sleep(wait)
+                        continue
                     if r.status_code == 429:
-                        wait = 2 ** attempt          # 1, 2, 4, 8, 16초
+                        wait = 2 ** attempt
                         logger.warning(f"429 Too Many Requests (page {page}), {wait}초 후 재시도")
                         await asyncio.sleep(wait)
                         continue
                     r.raise_for_status()
                     rb = self._get_response_body(r.json())
                     return _parse_items(rb) if rb else []
-                raise RuntimeError(f"page {page}: 429 재시도 5회 초과")
+                raise RuntimeError(f"page {page}: 재시도 5회 초과 (429 또는 ReadTimeout)")
 
         all_items: list[dict] = _parse_items(first_body)
         if total_pages > 1:

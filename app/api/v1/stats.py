@@ -358,3 +358,30 @@ async def trigger_backfill(
         accepted=True,
         message=f"{body.start_date} ~ {body.end_date} 백필을 백그라운드에서 시작합니다.",
     )
+
+
+# ──────────────────────────────────────────────────────────────
+# 스케줄러 상태
+# ──────────────────────────────────────────────────────────────
+
+class SchedulerStatusResponse(BaseModel):
+    enabled: bool
+    collect_hour: int
+    next_run: Optional[str]
+
+
+@router.get("/stats/scheduler", response_model=SchedulerStatusResponse)
+async def get_scheduler_status():
+    """자동 수집 스케줄러 상태 조회."""
+    from app.jobs.scheduler import scheduler
+
+    job = scheduler.get_job("daily_collect")
+    next_run = None
+    if job and job.next_run_time:
+        next_run = job.next_run_time.isoformat()
+
+    return SchedulerStatusResponse(
+        enabled=job is not None,
+        collect_hour=settings.COLLECT_HOUR,
+        next_run=next_run,
+    )
