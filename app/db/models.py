@@ -27,7 +27,7 @@ class BidsHistory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True, comment="나라장터 공고 번호")
-    client_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True, comment="발주처명")
+    client_name: Mapped[str] = mapped_column(String(100), nullable=True, index=True, comment="발주처명")
     region: Mapped[str] = mapped_column(String(50), nullable=False, comment="지역")
     project_type: Mapped[str] = mapped_column(String(50), nullable=False, comment="공종 (실내건축/조경 등)")
 
@@ -40,7 +40,7 @@ class BidsHistory(Base):
     )
     winner_price: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="낙찰가 (원)")
     participants: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여 업체 수")
-    bid_date: Mapped[date] = mapped_column(Date, nullable=False, index=True, comment="개찰 일자")
+    bid_date: Mapped[date] = mapped_column(Date, nullable=True, index=True, comment="개찰 일자")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

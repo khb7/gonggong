@@ -46,7 +46,7 @@ def upgrade() -> None:
         "bids_history",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("project_id", sa.String(50), nullable=False),
-        sa.Column("client_name", sa.String(100), nullable=False),
+        sa.Column("client_name", sa.String(100), nullable=True),
         sa.Column("region", sa.String(50), nullable=False),
         sa.Column("project_type", sa.String(50), nullable=False),
         sa.Column("base_price", sa.BigInteger(), nullable=False),
@@ -54,7 +54,7 @@ def upgrade() -> None:
         sa.Column("adjustment_rate", NUMERIC(10, 6), nullable=False),
         sa.Column("winner_price", sa.BigInteger(), nullable=True),
         sa.Column("participants", sa.Integer(), nullable=False),
-        sa.Column("bid_date", sa.Date(), nullable=False),
+        sa.Column("bid_date", sa.Date(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

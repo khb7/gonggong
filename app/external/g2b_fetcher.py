@@ -131,12 +131,15 @@ class G2BFetcher:
             resp = await client.get(NOTICE_ENDPOINT, params=params)
             resp.raise_for_status()
             body = resp.json()
-            items = (
-                body.get("response", {})
-                    .get("body", {})
-                    .get("items", {})
-                    .get("item", [])
-            )
+            resp_body = body.get("response", {}).get("body", {})
+            items_obj = resp_body.get("items", {})
+            if isinstance(items_obj, list):
+                items = items_obj
+            elif isinstance(items_obj, dict):
+                items = items_obj.get("item", [])
+            else:
+                items = []
+
             if not items:
                 raise G2BFetchError(f"입찰공고 없음: bid_notice_id={bid_notice_id}")
             # items가 단일 dict일 수도 있음
@@ -159,12 +162,15 @@ class G2BFetcher:
             resp = await client.get(SCSBID_ENDPOINT, params=params)
             resp.raise_for_status()
             body = resp.json()
-            items = (
-                body.get("response", {})
-                    .get("body", {})
-                    .get("items", {})
-                    .get("item", [])
-            )
+            resp_body = body.get("response", {}).get("body", {})
+            items_obj = resp_body.get("items", {})
+            if isinstance(items_obj, list):
+                items = items_obj
+            elif isinstance(items_obj, dict):
+                items = items_obj.get("item", [])
+            else:
+                items = []
+
             if not items:
                 # 낙찰결과 없을 경우(미개찰) → 기본값 반환
                 return {}

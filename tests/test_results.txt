@@ -1,0 +1,9 @@
+Calculated valid adjustment rates for 8229 bids.
+--------------------------------------------------
+Running app.engine.statistics functions...
+--------------------------------------------------
+Trimmed Median (5%): 99.926001%
+MAD (Median Absolute Deviation): 0.486759%
+Confidence Range (Median ± MAD): [99.439242%, 100.412760%]
+
+Test completed successfully!

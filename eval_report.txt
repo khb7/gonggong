@@ -1,0 +1,82 @@
+Total rows in CSV: 824
+
+--- Notice: R25BK01192050 ---
+Overrides: 경남 하동군 옥종농업협동조합 | 경상남도 하동군 | 건축공사
+Base Price: 3,094,697,000 | Actual Bid: 2,479,000,000 | Actual Rate: 80.104%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 2,712,347,185
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 2,718,536,579
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 2,718,536,579
+Data Source: default
+
+--- Notice: R25BK01230180 ---
+Overrides: 대구광역시교육청 영남공업고등학교 | 대구광역시 수성구 | 건축공사
+Base Price: 1,459,901,000 | Actual Bid: 1,301,289,900 | Actual Rate: 89.23%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 1,279,530,231
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 1,282,450,033
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 1,282,450,033
+Data Source: default
+
+--- Notice: R25BK01239173 ---
+Overrides: 주택도시보증공사 | 부산광역시 남구 | 실내건축공사
+Base Price: 4,629,130,000 | Actual Bid: 4,037,697,000 | Actual Rate: 87.577%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 4,057,200,988
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 4,066,459,248
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 4,066,459,248
+Data Source: default
+
+--- Notice: R25BK01239784 ---
+Overrides: 주택도시보증공사 | 부산광역시 남구 | 실내건축공사
+Base Price: 3,636,140,000 | Actual Bid: 3,184,996,070 | Actual Rate: 87.58%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 3,186,894,903
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 3,194,167,183
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 3,194,167,183
+Data Source: default
+
+--- Notice: R25BK01239813 ---
+Overrides: 주택도시보증공사 | 부산광역시 남구 | 실내건축공사
+Base Price: 2,948,020,000 | Actual Bid: 2,595,938,880 | Actual Rate: 87.578%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 2,583,792,129
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 2,589,688,169
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 2,589,688,169
+Data Source: default
+
+--- Notice: R25BK01239836 ---
+Overrides: 주택도시보증공사 | 부산광역시 남구 | 실내건축공사
+Base Price: 6,503,900,000 | Actual Bid: 5,652,591,000 | Actual Rate: 86.435%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 5,700,343,155
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 5,713,350,955
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 5,713,350,955
+Data Source: default
+
+--- Notice: R25BK01240969 ---
+Overrides: 경상남도 하동군 양보면 | 경상남도 하동군 | 건축공사
+Base Price: 83,567,000 | Actual Bid: 74,290,000 | Actual Rate: 90.725%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 73,242,297
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 73,409,431
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 73,409,431
+Data Source: default
+
+--- Notice: R25BK01243512 ---
+Overrides: 한국토지주택공사 | 경상남도 진주시 | 건축공사
+Base Price: 49,701,201,000 | Actual Bid: 48,390,479,737 | Actual Rate: 97.647%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 43,560,617,616
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 43,660,020,018
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 43,660,020,018
+Data Source: default
+
+--- Notice: R25BK01246123 ---
+Overrides: 경기도수원교육청 중앙기독초등학교 | 경기도 수원시 영통구 | 건축공사
+Base Price: 789,602,000 | Actual Bid: 715,418,526 | Actual Rate: 90.34%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 692,046,672
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 693,625,876
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 693,625,876
+Data Source: default
+
+--- Notice: R25BK01246730 ---
+Overrides: 서울대학교 | 서울특별시 관악구 | 건축공사
+Base Price: 805,153,000 | Actual Bid: 712,382,810 | Actual Rate: 88.36%
+Strategy: Aggressive | Pred Rate: 87.645% | Pred Bid: 705,676,346
+Strategy: Normal | Pred Rate: 87.845% | Pred Bid: 707,286,652
+Strategy: Safe | Pred Rate: 87.845% | Pred Bid: 707,286,652
+Data Source: default
+

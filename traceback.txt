@@ -1,0 +1,28 @@
+Traceback (most recent call last):
+  File "C:\Users\Lenovo\gonggong\app\external\g2b_fetcher.py", line 138, in _fetch_notice
+    .get("item", [])
+     ^^^
+AttributeError: 'list' object has no attribute 'get'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\Lenovo\gonggong\app\api\v1\bidding.py", line 53, in calculate_bid
+    notice = await fetcher.fetch(body.bid_notice_id)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lenovo\gonggong\app\external\g2b_fetcher.py", line 100, in fetch
+    notice_data = await self._fetch_notice(client, bid_notice_id)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lenovo\gonggong\app\external\g2b_fetcher.py", line 147, in _fetch_notice
+    raise G2BFetchError(f"입찰공고 파싱 실패: {e}") from e
+app.external.g2b_fetcher.G2BFetchError: 입찰공고 파싱 실패: 'list' object has no attribute 'get'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Lenovo\gonggong\test_router.py", line 19, in main
+    res = await calculate_bid(req, db)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lenovo\gonggong\app\api\v1\bidding.py", line 58, in calculate_bid
+    raise HTTPException(
+fastapi.exceptions.HTTPException: 503: 나라장터 API 연동 실패: 입찰공고 파싱 실패: 'list' object has no attribute 'get'

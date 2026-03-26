@@ -53,9 +53,15 @@ async def calculate_bid(
         notice = await fetcher.fetch(body.bid_notice_id)
     except Exception as e:
         g2b_status = "failed"
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"나라장터 API 연동 실패: {str(e)}",
+        from app.external.g2b_fetcher import G2BNoticeData
+        # Create empty Notice Data. User must provide overrides.
+        notice = G2BNoticeData(
+            base_price=0,
+            client_name="",
+            region="",
+            project_type="",
+            lower_limit_rate=Decimal("0.87745"),
+            participants=100
         )
 
     # ── 2. Override 적용 ────────────────────────────────
@@ -65,6 +71,10 @@ async def calculate_bid(
     base_price = notice.base_price
     lower_limit_rate = notice.lower_limit_rate
     participants = notice.participants
+    
+    client_name = notice.client_name
+    region = notice.region
+    project_type = notice.project_type
 
     if body.overrides:
         mode = "override"
@@ -77,6 +87,15 @@ async def calculate_bid(
         if body.overrides.participants is not None:
             participants = body.overrides.participants
             overridden_fields.append("participants")
+        if body.overrides.client_name is not None:
+            client_name = body.overrides.client_name
+            overridden_fields.append("client_name")
+        if body.overrides.region is not None:
+            region = body.overrides.region
+            overridden_fields.append("region")
+        if body.overrides.project_type is not None:
+            project_type = body.overrides.project_type
+            overridden_fields.append("project_type")
 
     # ── 3. 버킷 분류 ────────────────────────────────────
     bucket_id = ProjectBucket.get_bucket_id(base_price)
@@ -85,9 +104,9 @@ async def calculate_bid(
     try:
         rates, fallback_level = await get_rates_with_fallback(
             db=db,
-            client_name=notice.client_name,
-            region=notice.region,
-            project_type=notice.project_type,
+            client_name=client_name,
+            region=region,
+            project_type=project_type,
             bucket_id=bucket_id,
         )
     except Exception as e:

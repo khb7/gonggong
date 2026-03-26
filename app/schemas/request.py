@@ -17,6 +17,9 @@ class BidOverrides(BaseModel):
         None, description="낙찰하한율 (예: 0.87745)", gt=0, lt=1
     )
     participants: int | None = Field(None, description="참여 업체 수", gt=0)
+    client_name: str | None = Field(None, description="발주처명 (예: 부산광역시)")
+    region: str | None = Field(None, description="지역명 (예: 부산광역시[26000])")
+    project_type: str | None = Field(None, description="분류/공종 (예: 건축공사)")
 
 
 class BidRequest(BaseModel):
