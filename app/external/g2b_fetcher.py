@@ -16,6 +16,13 @@ from decimal import Decimal
 
 import httpx
 
+from app.db.normalize import (
+    normalize_project_type,
+    normalize_region,
+    normalize_bid_type,
+    normalize_price_method,
+)
+
 
 # ──────────────────────────────────────────────────────────────
 # 공통 상수
@@ -29,17 +36,14 @@ DEFAULT_TIMEOUT = 10.0   # 초
 DEFAULT_PARTICIPANTS = 100   # 참여업체수 기본 추정값 (공고 시점 미공개)
 
 
-def parse_project_type(notice_data: dict) -> str:
-    """공고 데이터에서 공종을 추출한다.
+def parse_project_type(notice_data: dict) -> str | None:
+    """
+    공고 데이터에서 공종을 추출·정규화하여 반환한다.
     bidprcPsblIndstrytyNm(투찰가능업종명) 텍스트로 판단.
-    대상: 건축공사업, 조경식재공사업만 수집. 나머지는 "기타" 반환.
+    반환값: "실내건축" / "조경" / None(대상 아님)
     """
     industry_nm = notice_data.get("bidprcPsblIndstrytyNm", "")
-    if "조경식재" in industry_nm:
-        return "조경식재공사업"
-    if "건축공사업" in industry_nm:
-        return "건축공사업"
-    return "기타"
+    return normalize_project_type(industry_nm)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -56,6 +60,9 @@ class G2BNoticeData:
     lower_limit_rate: Decimal
     participants: int = DEFAULT_PARTICIPANTS   # 공고 시점 미공개 — 기본값 사용
     bid_notice_no: str = ""
+    bid_type: str = "적격심사"       # 입찰방식 (G2B: bidMethdNm)
+    client_id: str | None = None    # 발주청 코드 (G2B: dmndInsttCd)
+    price_method: str = "기타"      # 예정가격 결정방식 (G2B: presmptPrceDcsnMthdNm)
 
 
 class G2BFetchError(Exception):
@@ -108,14 +115,22 @@ class G2BFetcher:
                 "미개찰 공고이거나 낙찰결과 미공개 상태입니다. overrides.base_price로 직접 입력하세요."
             )
 
+        raw_region = notice_data.get("prtcptPsblRgnNm") or notice_data.get("insttnNm", "")
+        raw_project_type = self._parse_project_type(notice_data)
+        raw_bid_type = notice_data.get("bidMethdNm", "")
+        raw_price_method = notice_data.get("presmptPrceDcsnMthdNm", "")
+
         return G2BNoticeData(
             bid_notice_no=bid_notice_id,
             base_price=int(base_price),
             client_name=notice_data.get("dmndInsttNm", "알 수 없음"),
-            region=notice_data.get("prtcptPsblRgnNm") or notice_data.get("insttnNm", "기타"),
-            project_type=self._parse_project_type(notice_data),
+            client_id=notice_data.get("dmndInsttCd") or None,
+            region=normalize_region(raw_region),
+            project_type=raw_project_type or "기타",
             lower_limit_rate=Decimal(str(scsbid_data.get("sucsfLwstlmtRt", "87.745"))) / 100,
             participants=DEFAULT_PARTICIPANTS,
+            bid_type=normalize_bid_type(raw_bid_type),
+            price_method=normalize_price_method(raw_price_method),
         )
 
     async def _fetch_notice(self, client: httpx.AsyncClient, bid_notice_id: str) -> dict:
@@ -184,7 +199,7 @@ class G2BFetcher:
             raise G2BFetchError(f"낙찰결과 파싱 실패: {e}") from e
 
     @staticmethod
-    def _parse_project_type(notice_data: dict) -> str:
+    def _parse_project_type(notice_data: dict) -> str | None:
         return parse_project_type(notice_data)
 
 
@@ -203,19 +218,25 @@ class MockG2BFetcher:
             bid_notice_no="TEST-001",
             base_price=1_000_000_000,
             client_name="서울특별시",
+            client_id="6110000",
             region="서울",
             project_type="실내건축",
             lower_limit_rate=Decimal("0.87745"),
             participants=152,
+            bid_type="적격심사",
+            price_method="복수예비가격",
         ),
         "TEST-002": G2BNoticeData(
             bid_notice_no="TEST-002",
             base_price=500_000_000,
             client_name="경기도교육청",
+            client_id="7340000",
             region="경기",
             project_type="실내건축",
             lower_limit_rate=Decimal("0.87745"),
             participants=30,
+            bid_type="적격심사",
+            price_method="복수예비가격",
         ),
     }
 
@@ -227,9 +248,12 @@ class MockG2BFetcher:
                 bid_notice_no=bid_notice_id,
                 base_price=1_000_000_000,
                 client_name="기타기관",
+                client_id=None,
                 region="기타",
                 project_type="실내건축",
                 lower_limit_rate=Decimal("0.87745"),
                 participants=100,
+                bid_type="적격심사",
+                price_method="기타",
             ),
         )

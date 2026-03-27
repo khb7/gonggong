@@ -11,7 +11,7 @@ class BidItem(BaseModel):
     label: str = Field(..., description="전략 레이블 (Aggressive / Normal / Safe)")
     rate_pct: float = Field(..., description="예가 대비 비율 (%)")
     price_krw: int = Field(..., description="최종 투찰가 (원)")
-    digit_filter_applied: bool = Field(..., description="Digit Filter 적용 여부")
+    digit_filter_triggered: bool = Field(..., description="Digit Filter 발동 여부 (추후 데이터 분석 및 가설 검증용)")
 
 
 class FetchedData(BaseModel):

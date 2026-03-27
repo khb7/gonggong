@@ -1,6 +1,6 @@
 """
 app/db/crud_write.py
-bids_history 쓰기 전용 CRUD.
+bids_history / bid_participants 쓰기 전용 CRUD.
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidsHistory
+from app.db.models import BidsHistory, BidParticipants
 
 
 async def upsert_bids_history(
@@ -37,12 +37,44 @@ async def upsert_bids_history(
             "winner_price": r.winner_price,
             "participants": r.participants,
             "bid_date": r.bid_date,
+            "bid_type": getattr(r, "bid_type", "기타"),
+            "client_id": getattr(r, "client_id", None),
+            "price_method": getattr(r, "price_method", "기타"),
         }
         for r in records
     ]
 
     stmt = pg_insert(BidsHistory).values(values)
     stmt = stmt.on_conflict_do_nothing(index_elements=["project_id"])
+    result = await db.execute(stmt)
+    await db.commit()
+
+    inserted = result.rowcount
+    skipped = len(records) - inserted
+    return inserted, skipped
+
+
+async def upsert_bid_participants(
+    db: AsyncSession,
+    records: list[dict],
+) -> tuple[int, int]:
+    """
+    전체 참여자 투찰 데이터를 bid_participants에 삽입.
+    (project_id, rank) 중복은 스킵.
+
+    Args:
+        records: dict 리스트. 필수 키: project_id, rank, bid_amount, bid_rate, is_winner
+
+    Returns:
+        (inserted_count, skipped_count)
+    """
+    if not records:
+        return 0, 0
+
+    stmt = pg_insert(BidParticipants).values(records)
+    stmt = stmt.on_conflict_do_nothing(
+        constraint="uq_bid_participants_project_rank"
+    )
     result = await db.execute(stmt)
     await db.commit()
 

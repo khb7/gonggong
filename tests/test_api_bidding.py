@@ -92,8 +92,8 @@ def test_calculate_auto_mode_correct_notice_data(client):
     assert data["mode"] == "auto"
 
 
-def test_calculate_auto_mode_returns_3_bids(client):
-    """기본값으로 3개의 타점이 반환되어야 한다."""
+def test_calculate_auto_mode_returns_1_bid(client):
+    """항상 공격형 1개의 타점만 반환되어야 한다."""
     with patch("app.data.fallback.get_rates_by_client", return_value=[]), \
          patch("app.data.fallback.get_rates_by_region", return_value=[]), \
          patch("app.data.fallback.get_rates_by_type_and_bucket", return_value=[]), \
@@ -104,12 +104,12 @@ def test_calculate_auto_mode_returns_3_bids(client):
             json={"bid_notice_id": "TEST-001"},
         )
     bids = resp.json()["bids"]
-    assert len(bids) == 3
+    assert len(bids) == 1
     for bid in bids:
         assert "label" in bid
         assert "rate_pct" in bid
         assert "price_krw" in bid
-        assert "digit_filter_applied" in bid
+        assert "digit_filter_triggered" in bid
 
 
 def test_calculate_auto_mode_default_fallback(client):

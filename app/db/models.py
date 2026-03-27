@@ -11,7 +11,7 @@ SQLAlchemy ORM 모델 정의
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, Float, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -41,6 +41,57 @@ class BidsHistory(Base):
     winner_price: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="낙찰가 (원)")
     participants: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여 업체 수")
     bid_date: Mapped[date] = mapped_column(Date, nullable=True, index=True, comment="개찰 일자")
+
+    # ── 2026-03-27 추가 ──────────────────────────────────────
+    bid_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="기타", index=True,
+        comment="입찰방식: 적격심사 / 최저가 / 협상 / 기타"
+    )
+    client_id: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, index=True,
+        comment="나라장터 발주청 코드 (없으면 NULL)"
+    )
+    price_method: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default="기타",
+        comment="예정가격 결정방식: 복수예비가격 / 고정예정가격 / 기타"
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class BidParticipants(Base):
+    """
+    입찰 공고별 전체 참여자 투찰 데이터.
+
+    bids_history가 낙찰자(1위)의 사정률만 저장하는 반면,
+    이 테이블은 모든 참여자의 투찰금액·투찰율을 저장한다.
+
+    활용:
+      - 경쟁 밀집 구간 파악 → 과밀 구간 회피 전략
+      - 발주처·공종별 투찰 패턴 분포 분석
+      - 끝자리 동적 블랙리스트 생성
+      - 1~2위 마진 분석
+    """
+
+    __tablename__ = "bid_participants"
+    __table_args__ = (
+        UniqueConstraint("project_id", "rank", name="uq_bid_participants_project_rank"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="나라장터 공고 번호"
+    )
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, comment="개찰순위")
+    bid_amount: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="투찰금액 (원)")
+    bid_rate: Mapped[Decimal] = mapped_column(
+        Numeric(10, 6), nullable=False, comment="투찰율 = 투찰금액 / 예정가격"
+    )
+    is_winner: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="낙찰자 여부 (rank=1)"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.db.crud import TARGET_BID_TYPE
 from app.db.session import get_db
+from app.db.normalize import normalize_region, normalize_project_type, normalize_bid_type
 from app.data.fallback import get_rates_with_fallback, LEVEL_NONE
 from app.db.models import ProjectBucket
 from app.engine.statistics import trimmed_median, mad
@@ -71,10 +73,11 @@ async def calculate_bid(
     base_price = notice.base_price
     lower_limit_rate = notice.lower_limit_rate
     participants = notice.participants
-    
     client_name = notice.client_name
-    region = notice.region
-    project_type = notice.project_type
+    client_id = notice.client_id
+    region = normalize_region(notice.region)
+    project_type = normalize_project_type(notice.project_type) or notice.project_type
+    bid_type = notice.bid_type
 
     if body.overrides:
         mode = "override"
@@ -90,12 +93,18 @@ async def calculate_bid(
         if body.overrides.client_name is not None:
             client_name = body.overrides.client_name
             overridden_fields.append("client_name")
+        if body.overrides.client_id is not None:
+            client_id = body.overrides.client_id
+            overridden_fields.append("client_id")
         if body.overrides.region is not None:
-            region = body.overrides.region
+            region = normalize_region(body.overrides.region)
             overridden_fields.append("region")
         if body.overrides.project_type is not None:
-            project_type = body.overrides.project_type
+            project_type = normalize_project_type(body.overrides.project_type) or body.overrides.project_type
             overridden_fields.append("project_type")
+        if body.overrides.bid_type is not None:
+            bid_type = normalize_bid_type(body.overrides.bid_type)
+            overridden_fields.append("bid_type")
 
     # ── 3. 버킷 분류 ────────────────────────────────────
     bucket_id = ProjectBucket.get_bucket_id(base_price)
@@ -108,6 +117,8 @@ async def calculate_bid(
             region=region,
             project_type=project_type,
             bucket_id=bucket_id,
+            bid_type=bid_type,
+            client_id=client_id,
         )
     except Exception as e:
         rates, fallback_level = [], LEVEL_NONE

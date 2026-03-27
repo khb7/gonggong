@@ -75,16 +75,16 @@ def test_digit_filter_no_float_ambiguity():
 # ──────────────────────────────────────────
 
 @pytest.mark.parametrize("participants, expected", [
-    (10,  "safe"),
-    (49,  "safe"),
-    (50,  "normal"),
-    (152, "normal"),
-    (299, "normal"),
+    (10,  "aggressive"),
+    (49,  "aggressive"),
+    (50,  "aggressive"),
+    (152, "aggressive"),
+    (299, "aggressive"),
     (300, "aggressive"),
     (500, "aggressive"),
 ])
 def test_select_strategy(participants, expected):
-    """경쟁자 수 기준 전략 분기가 정확해야 한다."""
+    """경쟁자 수에 무관하게 항상 aggressive 전략이어야 한다."""
     assert select_strategy(participants) == expected
 
 
@@ -106,20 +106,18 @@ def test_select_center_offset_aggressive():
 
 
 def test_generate_bid_spread_count():
-    """count=3이면 3개의 후보를 반환해야 한다."""
-    result = generate_bid_spread(center=Decimal("0.0"), count=3)
-    assert len(result) == 3
+    """count=1이면 1개의 후보를 반환해야 한다."""
+    result = generate_bid_spread(center=Decimal("0.0"), count=1)
+    assert len(result) == 1
 
 
 def test_generate_bid_spread_values():
-    """중심 0.0, step=0.001, count=3 → [-0.001, 0.000, +0.001]
+    """중심 0.0, step=0.001, count=1 → [0.000]
     digit_filter는 calculator로 위임하므로 offset 자체 값을 검증.
     """
     result = generate_bid_spread(
         center=Decimal("0.0"),
         step=Decimal("0.001"),
-        count=3,
+        count=1,
     )
-    assert result[0] == Decimal("-0.001")
-    assert result[1] == Decimal("0.000")
-    assert result[2] == Decimal("0.001")
+    assert result[0] == Decimal("0.000")

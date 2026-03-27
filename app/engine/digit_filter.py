@@ -21,22 +21,25 @@ _MAX_SHIFT = 20
 def apply_digit_filter(
     rate: Decimal,
     blacklist: frozenset[str] = DIGIT_BLACKLIST,
+    active: bool = True,
     _depth: int = 0,
 ) -> tuple[Decimal, bool]:
     """
     사정률(rate)의 소수점 끝 3자리를 문자열로 추출해 블랙리스트와 비교.
-    해당하면 +0.001 Shift 후 재귀 검사. 안전한 값과 Shift 여부를 반환.
-    Ref: 공공입찰.md - 8. Digit Filter (동가 회피)
+    active=True 이면 +0.001 Shift 후 재귀 검사하여 안전한 값 반환.
+    active=False 이면 데이터 수집 목적으로 블랙리스트 해당 여부(bool)만 반환하고 원본 값 유지.
+    Ref: 공공입찰.md - 8. Digit Filter (동점 회피 제안 및 검증)
 
     Args:
         rate: 검사할 사정률 (Decimal)
         blacklist: 끝자리 블랙리스트 (기본값: DIGIT_BLACKLIST)
+        active: 필터 작동 여부 (False면 원본 유지)
         _depth: 내부 재귀 깊이 추적 (직접 사용 금지)
 
     Returns:
-        (filtered_rate, was_shifted) 튜플
-        - filtered_rate: 안전한 사정률 값
-        - was_shifted: 한 번이라도 Shift가 발생했으면 True
+        (filtered_rate, triggered) 튜플
+        - filtered_rate: 안전한 사정률 값 (active=False면 원본 유지)
+        - triggered: 블랙리스트에 걸렸는지 여부
 
     Raises:
         RuntimeError: _MAX_SHIFT 초과 시 (블랙리스트가 너무 촘촘한 경우)
@@ -63,9 +66,12 @@ def apply_digit_filter(
         tail = "000"
 
     if tail in blacklist:
-        shifted_rate, _ = apply_digit_filter(
-            rate + Decimal("0.001"), blacklist, _depth + 1
-        )
-        return shifted_rate, True
+        if active:
+            shifted_rate, _ = apply_digit_filter(
+                rate + Decimal("0.001"), blacklist, active, _depth + 1
+            )
+            return shifted_rate, True
+        else:
+            return rate, True
 
     return rate, (_depth > 0)

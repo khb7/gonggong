@@ -18,8 +18,10 @@ class BidOverrides(BaseModel):
     )
     participants: int | None = Field(None, description="참여 업체 수", gt=0)
     client_name: str | None = Field(None, description="발주처명 (예: 부산광역시)")
-    region: str | None = Field(None, description="지역명 (예: 부산광역시[26000])")
-    project_type: str | None = Field(None, description="분류/공종 (예: 건축공사)")
+    client_id: str | None = Field(None, description="나라장터 발주청 코드 (예: 6110000)")
+    region: str | None = Field(None, description="지역명 (예: 서울, 경기)")
+    project_type: str | None = Field(None, description="공종 (예: 실내건축, 조경)")
+    bid_type: str | None = Field(None, description="입찰방식 (예: 적격심사, 최저가, 협상)")
 
 
 class BidRequest(BaseModel):

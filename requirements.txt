@@ -8,6 +8,8 @@ pydantic-settings
 numpy
 scipy
 python-dotenv
+python-multipart
+pandas
 apscheduler
 pytest
 pytest-asyncio

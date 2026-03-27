@@ -14,25 +14,16 @@ from decimal import Decimal
 
 def select_strategy(participants: int) -> str:
     """
-    경쟁자 수에 따라 전략명을 반환한다.
-    Ref: 공공입찰.md - 6. 경쟁자 기반 동적 룰
-
-    - < 50   → "safe"       동가 위험 낮음, 마진 확보 우선
-    - 50~299 → "normal"     기본 궤적 추종
-    - ≥ 300  → "aggressive" 군집 형성, 하단 타격으로 낙찰 확률 극대화
+    클라이언트 요청에 따라 어떤 상황이든 (경쟁자 수에 무관하게) 무조건 aggressive 전략을 반환한다.
+    "일을 하나라도 더 추가로 받고싶다고 하셔서 업체 수랑 상관 없이 공격형으로만"
 
     Args:
-        participants: 입찰 참여 업체 수
+        participants: 입찰 참여 업체 수 (사용되지 않음)
 
     Returns:
-        전략명 문자열: "safe" | "normal" | "aggressive"
+        전략명 문자열: "aggressive"
     """
-    if participants < 50:
-        return "safe"
-    elif participants < 300:
-        return "normal"
-    else:
-        return "aggressive"
+    return "aggressive"
 
 
 def select_center_offset(strategy: str, mad_val: Decimal) -> Decimal:

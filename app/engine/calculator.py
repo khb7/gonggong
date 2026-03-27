@@ -12,8 +12,8 @@ from decimal import Decimal, ROUND_DOWN
 from app.engine.strategy import select_strategy, select_center_offset, generate_bid_spread
 from app.engine.digit_filter import apply_digit_filter
 
-# 전략 레이블 순서 (Aggressive → Normal → Safe)
-_LABELS = ["Aggressive", "Normal", "Safe"]
+# 전략 레이블 순서 (오직 Aggressive 하나만 사용)
+_LABELS = ["Aggressive"]
 
 
 def calculate_single(
@@ -41,8 +41,8 @@ def calculate_single(
     """
     combined_rate = lower_limit_rate + offset
 
-    # digit_filter: 최종 결합 rate의 끝자리 블랙리스트 회피
-    combined_rate, was_shifted = apply_digit_filter(combined_rate)
+    # digit_filter: 데이터 수집 및 가설 검증 단계이므로 active=False로 작동 (필터 발동 여부만 기록)
+    combined_rate, triggered_digit_filter = apply_digit_filter(combined_rate, active=False)
 
     final_price_decimal = Decimal(base_price) * predicted_rate * combined_rate
 
@@ -52,7 +52,7 @@ def calculate_single(
     # 비율은 예가 대비 % (lower_limit_rate + offset) × predicted_rate × 100
     rate_pct = float(round(combined_rate * predicted_rate * 100, 5))
 
-    return {"rate_pct": rate_pct, "price_krw": price_krw, "digit_filter_applied": was_shifted}
+    return {"rate_pct": rate_pct, "price_krw": price_krw, "digit_filter_triggered": triggered_digit_filter}
 
 
 def calculate_bid_spread(
@@ -62,7 +62,7 @@ def calculate_bid_spread(
     participants: int,
     mad_val: Decimal,
     step: Decimal = Decimal("0.001"),
-    count: int = 3,
+    count: int = 1,
 ) -> dict:
     """
     Multi-Shot Bid Spread를 계산하여 전략별 투찰가 리스트를 반환한다.
@@ -94,9 +94,9 @@ def calculate_bid_spread(
 
     Examples:
         base_price=1_000_000_000, LLR=0.87745, predicted_rate=1.0, participants=152
-        → strategy: "normal", center_offset=0
-        → spread offsets: [-0.001, 0.000, +0.001]
-        → bids: Aggressive / Normal / Safe 3개
+        → strategy: "aggressive" (항상), center_offset=-MAD
+        → spread offsets: [-MAD]
+        → bids: Aggressive 1개
     """
     strategy = select_strategy(participants)
     center_offset = select_center_offset(strategy, mad_val)

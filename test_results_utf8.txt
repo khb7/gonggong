@@ -1,0 +1,34 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.11.4, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\Users\Lenovo\gonggong
+configfile: pytest.ini
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 36 items
+
+tests\test_digit_filter_and_strategy.py ..................               [ 50%]
+tests\test_calculator.py F........                                       [ 75%]
+tests\test_api_bidding.py .........                                      [100%]
+
+================================== FAILURES ===================================
+_________________________ test_calculate_single_basic _________________________
+
+    def test_calculate_single_basic():
+        """
+        LLR=0.87745, offset=0 → combined=0.87745 → digit_filter Shift → 0.87845
+        1,000,000,000 × 1.0 × 0.87845 = 878,450,000원
+        """
+        result = calculate_single(
+            base_price=1_000_000_000,
+            lower_limit_rate=Decimal("0.87745"),
+            predicted_rate=Decimal("1.00000"),
+            offset=Decimal("0"),
+        )
+        # 0.87745+0=0.87745 → 745 블랙 → 0.87845
+>       assert result["price_krw"] == 878_450_000
+E       assert 877450000 == 878450000
+
+tests\test_calculator.py:27: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_calculator.py::test_calculate_single_basic - assert 8774500...
+======================== 1 failed, 35 passed in 1.90s =========================

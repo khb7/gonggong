@@ -14,6 +14,9 @@ from app.db.models import BidsHistory, ClientStatistics
 # Fallback 최소 샘플 수
 MIN_SAMPLE_SIZE = 20
 
+# 통계 대상 입찰방식 (적격심사만 사용)
+TARGET_BID_TYPE = "적격심사"
+
 # bucket_id → (min_price, max_price) 매핑 (project_bucket 시드 데이터와 동기화)
 _BUCKET_RANGES: dict[int, tuple[int, int | None]] = {
     1: (0,           100_000_000),
@@ -26,12 +29,16 @@ _BUCKET_RANGES: dict[int, tuple[int, int | None]] = {
 def _bucket_filter(bucket_id: int):
     """
     bucket_id에 해당하는 base_price 범위 조건을 반환한다.
-    Ref: 공공입찰.md - 1. 데이터 분리 (금액 구간)
     """
     min_p, max_p = _BUCKET_RANGES[bucket_id]
     if max_p is None:
         return BidsHistory.base_price >= min_p
     return and_(BidsHistory.base_price >= min_p, BidsHistory.base_price < max_p)
+
+
+def _bid_type_filter(bid_type: str):
+    """입찰방식 필터."""
+    return BidsHistory.bid_type == bid_type
 
 
 async def get_collected_dates(
@@ -54,13 +61,24 @@ async def get_rates_by_client(
     client_name: str,
     project_type: str,
     bucket_id: int,
+    bid_type: str = TARGET_BID_TYPE,
+    client_id: str | None = None,
 ) -> list[Decimal]:
-    """발주처 + 공종 + 버킷 기준 사정률 리스트 반환."""
+    """
+    발주처 + 공종 + 버킷 기준 사정률 리스트 반환.
+    client_id가 있으면 코드 우선, 없으면 client_name으로 매칭.
+    """
+    if client_id:
+        client_filter = BidsHistory.client_id == client_id
+    else:
+        client_filter = BidsHistory.client_name == client_name
+
     result = await db.execute(
         select(BidsHistory.adjustment_rate).where(
-            BidsHistory.client_name == client_name,
+            client_filter,
             BidsHistory.project_type == project_type,
             _bucket_filter(bucket_id),
+            _bid_type_filter(bid_type),
         )
     )
     return [row[0] for row in result.fetchall()]
@@ -71,6 +89,7 @@ async def get_rates_by_region(
     region: str,
     project_type: str,
     bucket_id: int,
+    bid_type: str = TARGET_BID_TYPE,
 ) -> list[Decimal]:
     """지역 + 공종 + 버킷 기준 사정률 리스트 반환."""
     result = await db.execute(
@@ -78,6 +97,7 @@ async def get_rates_by_region(
             BidsHistory.region == region,
             BidsHistory.project_type == project_type,
             _bucket_filter(bucket_id),
+            _bid_type_filter(bid_type),
         )
     )
     return [row[0] for row in result.fetchall()]
@@ -87,12 +107,14 @@ async def get_rates_by_type_and_bucket(
     db: AsyncSession,
     project_type: str,
     bucket_id: int,
+    bid_type: str = TARGET_BID_TYPE,
 ) -> list[Decimal]:
     """공종 + 버킷 기준 사정률 리스트 반환."""
     result = await db.execute(
         select(BidsHistory.adjustment_rate).where(
             BidsHistory.project_type == project_type,
             _bucket_filter(bucket_id),
+            _bid_type_filter(bid_type),
         )
     )
     return [row[0] for row in result.fetchall()]
@@ -101,11 +123,13 @@ async def get_rates_by_type_and_bucket(
 async def get_all_rates(
     db: AsyncSession,
     project_type: str,
+    bid_type: str = TARGET_BID_TYPE,
 ) -> list[Decimal]:
     """공종 전체 사정률 리스트 반환 (최후 Fallback, 버킷 구분 없음)."""
     result = await db.execute(
         select(BidsHistory.adjustment_rate).where(
             BidsHistory.project_type == project_type,
+            _bid_type_filter(bid_type),
         )
     )
     return [row[0] for row in result.fetchall()]
