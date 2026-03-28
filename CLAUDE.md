@@ -120,32 +120,61 @@ pytest
 
 ---
 
-## 미구현 / 진행 중인 작업
+## 최종 목표
 
-### 데이터 수집 파이프라인 (최우선)
+1. **사정률 예측 정확도 향상** — 발주처 패턴 기반, 100% 상/하 방향성 포함
+2. **투찰 자동화** — 예측 후 나라장터에 직접 투찰 (수동 클릭 없이)
+3. **낙찰률 3배 향상** — 현재 0.3~0.4% → 목표 1% 이상
+
+### 주요 타겟 발주처
+- **국방부** (연말 집중 물량)
+- **교육청** (연중 높은 발주 빈도)
+- **경기도 지자체** (조경·실내건축 물량 다수)
+
+---
+
+## 데이터 수집 파이프라인
 
 현재 `bids_history`가 비어있어 fallback이 항상 `"none"` / `predicted_rate: 1.0`을 반환한다.
-아래 파일들을 추가로 구현해야 한다:
+
+### 경로 A: Info21c 자동 다운로드 (주 경로, 구현 완료)
+
+```
+scripts/info21c_downloader.py  ← Playwright 자동 다운로드 (구현됨, 셀렉터 검증 필요)
+scripts/etl_csv.py             ← 클린 CSV → DB 적재 (구현됨)
+```
+
+**실행 순서:**
+```bash
+# 1. 설치 (최초 1회)
+pip install playwright && playwright install chromium
+
+# 2. 다운로드 (--debug 로 첫 실행 권장)
+python scripts/info21c_downloader.py --start 20250101 --end 20251231 --debug
+
+# 3. DB 적재
+python scripts/etl_csv.py --file data/downloads/info21c_0002_20250101_20251231.csv
+python scripts/etl_csv.py --file data/downloads/info21c_0023_20250101_20251231.csv
+```
+
+Info21c 접속: `https://www.info21c.net/` / ID `nw8856` / PW `nw8856` (동시 접속 불가, 오전 주의)
+상세 계획: `md/plan_info21c.md`
+
+### 경로 B: G2B API 백필 (보완용, 미구현)
+
+아래 파일들이 추가로 필요하다:
 
 ```
 app/
-├── db/crud_write.py            # bids_history UPSERT (INSERT ON CONFLICT DO NOTHING)
-├── external/g2b_collector.py   # 날짜 범위 일괄 수집 (G2BCollector)
+├── db/crud_write.py            # bids_history UPSERT
+├── external/g2b_collector.py   # 날짜 범위 일괄 수집
 └── jobs/
     ├── __init__.py
     ├── collect.py              # 일별 수집 잡
     └── refresh_stats.py        # client_statistics 갱신 (선택)
-
-scripts/
-└── backfill.py                 # 과거 데이터 초기 적재
 ```
 
-설계: `md/data_collection.md`
-수정사항: `md/data_collection_fixes.md` — 구현 전 반드시 확인
-
-**Critical 수정 2개 (구현 전 필수):**
-1. `BidsHistory.project_id`에 `unique=True` 추가 + Alembic 마이그레이션
-2. `G2BCollector.collect_range()` 내부에서 1주일 단위 분할 처리
+설계: `md/data_collection.md` / 수정사항: `md/data_collection_fixes.md`
 
 ---
 

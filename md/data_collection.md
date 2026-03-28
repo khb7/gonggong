@@ -559,9 +559,62 @@ async def refresh_client_statistics():
 
 ---
 
-## 8. 구현 순서 (권장)
+## 8. Info21c 데이터 임포트 (G2B API 대안)
+
+### 개요
+
+**Info21c(인포21c)**는 나라장터 입찰 데이터를 분석·조회할 수 있는 상용 시스템으로,
+과거 개찰/낙찰 결과·사정률 등을 필터링·다운로드할 수 있다.
+G2B API 백필(과거 데이터 일괄 수집)의 대안이자 보완 수단이다.
+
+**접속**: ID `nw8856` / PW `nw8856` (동시 접속 불가, 오전 중 사용 주의)
+
+### 지원 내보내기 형식
+
+- 일반텍스트 기반 Excel / CSV
+- 포맷된 Excel
+- HTML / 일반텍스트
+- 세부 옵션: 구분자 지정, 리포트 제목 포함 여부, 추가 열 제거 등
+
+### 임포트 파이프라인 설계
 
 ```
+[Info21c에서 수동 내보내기]
+  → CSV/Excel 파일 (과거 낙찰 결과, 사정률 등)
+  ↓
+scripts/import_info21c.py
+  → CSV 파싱 → BidRecord 변환
+  → G2B API 호출 없이 bids_history UPSERT
+  ↓
+DB에 대량 과거 데이터 적재 (G2B 백필보다 빠름)
+```
+
+### 구현 포인트
+
+```python
+# scripts/import_info21c.py (신규)
+"""
+Info21c에서 내보낸 CSV/Excel을 bids_history에 임포트.
+python scripts/import_info21c.py --file data/info21c_export.csv
+
+⚠ 필드 매핑은 Info21c 컬럼명 확인 후 조정 필요.
+⚠ sucsfLwstlmtRt가 % 단위이면 /100 변환.
+⚠ adjustment_rate = winner_price / base_price 계산 필요.
+"""
+```
+
+G2B API 백필 전에 Info21c 데이터를 먼저 임포트하면:
+- API 호출 부담 최소화
+- 더 빠르게 `fallback_level: "none"` → `"client"` 전환 가능
+
+---
+
+## 9. 구현 순서 (권장)
+
+```
+0단계: Info21c에서 과거 데이터 CSV 내보내기 → scripts/import_info21c.py 로 초기 적재
+        → G2B API 없이 빠르게 bids_history 채우기
+
 1단계: crud_write.py 구현 + 단위 테스트
         → bids_history 삽입/중복 처리 확인
 
@@ -569,7 +622,7 @@ async def refresh_client_statistics():
         → MockCollector로 먼저 테스트 (실제 API 없이)
         → G2B_API_KEY 있을 때 실제 소량(1일치) 테스트
 
-3단계: scripts/backfill.py 로 과거 데이터 적재
+3단계: scripts/backfill.py 로 과거 데이터 적재 (Info21c로 부족한 기간 보완)
         → 최소 3개월치 이상 수집해야 fallback이 의미있어짐
         → 수집 후 fallback_level이 "none"에서 "client"/"region"으로 바뀌는지 확인
 
@@ -581,7 +634,7 @@ async def refresh_client_statistics():
 
 ---
 
-## 9. 주의사항
+## 10. 주의사항
 
 | 항목 | 내용 |
 |------|------|
