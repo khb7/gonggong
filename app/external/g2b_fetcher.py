@@ -97,37 +97,43 @@ class G2BFetcher:
             bid_notice_id: 나라장터 입찰공고번호 (예: "2026031112345")
 
         Returns:
-            G2BNoticeData
+            G2BNoticeData (base_price=0이면 미개찰 공고 — override 필요)
 
         Raises:
-            G2BFetchError: API 호출 실패 또는 파싱 실패
+            G2BFetchError: 입찰공고 API 호출/파싱 실패
         """
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            # Step 1: 입찰공고 정보
+            # Step 1: 입찰공고 정보 (필수 — 실패 시 G2BFetchError)
             notice_data = await self._fetch_notice(client, bid_notice_id)
-            # Step 2: 낙찰결과(기초금액 + 하한율)
-            scsbid_data = await self._fetch_scsbid(client, bid_notice_id)
-
-        base_price = scsbid_data.get("bssAmt")
-        if not base_price:
-            raise G2BFetchError(
-                f"기초금액(bssAmt) 없음: bid_notice_id={bid_notice_id}. "
-                "미개찰 공고이거나 낙찰결과 미공개 상태입니다. overrides.base_price로 직접 입력하세요."
-            )
+            # Step 2: 낙찰결과(기초금액 + 하한율) — 미개찰이면 빈 dict
+            bsns_div_cd = self._parse_bsns_div_cd(notice_data)
+            scsbid_data = await self._fetch_scsbid(client, bid_notice_id, bsns_div_cd)
 
         raw_region = notice_data.get("prtcptPsblRgnNm") or notice_data.get("insttnNm", "")
         raw_project_type = self._parse_project_type(notice_data)
         raw_bid_type = notice_data.get("bidMethdNm", "")
         raw_price_method = notice_data.get("presmptPrceDcsnMthdNm", "")
 
+        # bssAmt: scsbid 우선, 없으면 notice에서 시도 (일부 API 버전에서 제공)
+        raw_base_price = scsbid_data.get("bssAmt") or notice_data.get("bssAmt")
+
+        # 낙찰결과 없음(미개찰) — notice 데이터는 보존, base_price=0으로 반환
+        # bidding.py에서 overrides.base_price 없으면 400 에러 처리
+        base_price = int(raw_base_price) if raw_base_price else 0
+        lower_limit_rate = (
+            Decimal(str(scsbid_data.get("sucsfLwstlmtRt", "87.745"))) / 100
+            if raw_base_price
+            else Decimal("0.87745")
+        )
+
         return G2BNoticeData(
             bid_notice_no=bid_notice_id,
-            base_price=int(base_price),
+            base_price=base_price,
             client_name=notice_data.get("dmndInsttNm", "알 수 없음"),
             client_id=notice_data.get("dmndInsttCd") or None,
             region=normalize_region(raw_region),
             project_type=raw_project_type or "기타",
-            lower_limit_rate=Decimal(str(scsbid_data.get("sucsfLwstlmtRt", "87.745"))) / 100,
+            lower_limit_rate=lower_limit_rate,
             participants=DEFAULT_PARTICIPANTS,
             bid_type=normalize_bid_type(raw_bid_type),
             price_method=normalize_price_method(raw_price_method),
@@ -164,11 +170,23 @@ class G2BFetcher:
         except Exception as e:
             raise G2BFetchError(f"입찰공고 파싱 실패: {e}") from e
 
-    async def _fetch_scsbid(self, client: httpx.AsyncClient, bid_notice_id: str) -> dict:
+    @staticmethod
+    def _parse_bsns_div_cd(notice_data: dict) -> str:
+        """
+        입찰공고 데이터의 bsnsDivNm(업무구분명)으로 bsnsDivCd를 결정한다.
+        공사=3, 용역=5, 기타=3(기본값)
+        """
+        bsns_div_nm = notice_data.get("bsnsDivNm", "")
+        if "용역" in bsns_div_nm:
+            return "5"
+        return "3"  # 공사(기본값)
+
+    async def _fetch_scsbid(self, client: httpx.AsyncClient, bid_notice_id: str, bsns_div_cd: str = "3") -> dict:
         """낙찰결과 API 호출 (기초금액 + 하한율)."""
         params = {
             "ServiceKey": self.api_key,
             "bidNtceNo": bid_notice_id,
+            "bsnsDivCd": bsns_div_cd,   # 필수 파라미터 (누락 시 에러코드 08)
             "numOfRows": "1",
             "pageNo": "1",
             "type": "json",

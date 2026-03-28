@@ -1,192 +1,246 @@
+"""
+Info21c 클린 CSV → bids_history DB 적재 스크립트.
+
+사전 조건:
+  - info21c_downloader.py 로 다운로드된 CSV 파일 사용
+  - 내보내기 옵션: CSV, 쉼표 구분자, 리포트제목 OFF, 필터세부사항 OFF
+
+사용법:
+  python scripts/etl_csv.py --file data/downloads/info21c_0002_20250101_20251231.csv
+  python scripts/etl_csv.py --file data/downloads/info21c_0023_20250101_20251231.csv
+
+기대 컬럼 (첫 행이 헤더):
+  입찰공고번호, 개찰순위, 면허업종제한목록, 낙찰하한율, 투찰율,
+  낙찰자선정여부, 투찰일자, 낙찰방법, 수요기관, 수요기관지역,
+  수요기관사업자등록번호, 기초금액, 예산가격, 투찰금액, 입찰참여자수
+"""
+
+import argparse
 import asyncio
 import os
 import sys
+from pathlib import Path
 
-# Add project root to python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pandas as pd
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal
 from app.db.models import BidsHistory
 
-FILE_NOTICE = r"c:\Users\Lenovo\gonggong\md\UI-ADODAA-008R.입찰공고 내역.csv"
-FILE_RESULT = r"c:\Users\Lenovo\gonggong\md\UI-ADOFAA-003R.입찰공고 결과내역.csv"
 
-PROJECT_TYPE_MAP = {
-    "0002": "실내건축",
-    "0023": "조경",
+# ── 지역명 정규화 ─────────────────────────────────────────────────────────────
+REGION_MAP = {
+    "서울": "서울", "부산": "부산", "대구": "대구", "인천": "인천",
+    "광주": "광주", "대전": "대전", "울산": "울산", "세종": "세종",
+    "경기": "경기", "강원": "강원", "충북": "충북", "충남": "충남",
+    "전북": "전북", "전남": "전남", "경북": "경북", "경남": "경남",
+    "제주": "제주",
 }
 
-def map_project_type(code_list_str: str) -> str:
+def normalize_region(raw: str) -> str:
+    """'경기도 수원시 팔달구' → '경기'"""
+    if not raw or pd.isna(raw):
+        return "기타"
+    raw = str(raw).strip()
+    for key in REGION_MAP:
+        if raw.startswith(key):
+            return REGION_MAP[key]
+    return raw[:2] if len(raw) >= 2 else "기타"
+
+
+# ── 공종 정규화 ───────────────────────────────────────────────────────────────
+def normalize_project_type(raw: str) -> str | None:
     """
-    '[건축공사업(0001)]' 등 한글이 포함되어 있을 수 있고 
-    '0002', '0002|0023' 처럼 코드로만 존재할 수도 있음.
-    
-    여기서는 원칙대로 0002 -> 실내건축, 0023 -> 조경으로 변환하며
-    복합 공종('|' 포함)은 None을 반환하여 필터링함.
+    '건축공사업[0002]', '0002', '조경식재공사업[0023]' 등 → '실내건축' / '조경'
+    복합 공종('|' 구분) 또는 매핑 없는 코드 → None (필터링)
     """
-    if pd.isna(code_list_str):
+    if not raw or pd.isna(raw):
         return None
-    
-    code_list_str = str(code_list_str)
-    if "|" in code_list_str:
+    raw = str(raw)
+    if "|" in raw:
         return None  # 복수 공종 제외
-    
-    # 0002나 0023이 포함되어 있는지 확인
-    if "0002" in code_list_str:
+    if "0002" in raw:
         return "실내건축"
-    elif "0023" in code_list_str:
+    if "0023" in raw:
         return "조경"
-    else:
-        # 매핑 안되는 경우 임시로 코드 자체를 반환
-        return code_list_str.strip()
+    return None
 
 
-def extract_and_transform() -> pd.DataFrame:
-    print("1. Extracting data...")
-    # Notice: Header at line 107 (idx 106), Data at line 126 (idx 125). Skip 0~105, 107~124
-    notice_skiprows = list(range(106)) + list(range(107, 125))
-    df_notice = pd.read_csv(FILE_NOTICE, sep="\t", encoding="utf-16", skiprows=notice_skiprows)
-    
-    # Result: Header at line 75 (idx 74), Data at line 76 (idx 75). Skip 0~73
-    df_result = pd.read_csv(FILE_RESULT, sep="\t", encoding="utf-16", skiprows=74)
-    
-    print(f"Loaded {len(df_notice)} notice rows, {len(df_result)} result rows.")
-    
-    # 데이터 정리 - 결과 내역
-    # 컬럼 이름에 양끝 공백이나 \t 가 있을 수 있으므로 스트립
-    df_result.columns = df_result.columns.str.strip()
-    df_notice.columns = df_notice.columns.str.strip()
+# ── 낙찰방법 정규화 ───────────────────────────────────────────────────────────
+def normalize_bid_type(raw: str) -> str:
+    """'적격심사제' / '적격심사' → '적격심사', 나머지 → '기타'"""
+    if not raw or pd.isna(raw):
+        return "기타"
+    raw = str(raw).strip()
+    if "적격" in raw:
+        return "적격심사"
+    if "최저가" in raw:
+        return "최저가"
+    if "협상" in raw:
+        return "협상"
+    return "기타"
 
-    # 필수 컬럼 존재하는지 확인
-    req_res_cols = ["입찰공고번호", "개찰순위", "기초금액", "낙찰하한율", "예정가격", "투찰금액", "입찰참여자수", "면허업종제한목록"]
-    for col in req_res_cols:
-        if col not in df_result.columns:
-            print(f"Warning: '{col}' not in file_result. Cols: {df_result.columns.tolist()}")
 
-    # 개찰순위 = 1 인 행만 결과 테이블로 사용 (1순위 낙찰자)
-    if "개찰순위" in df_result.columns:
-        # 개찰순위가 숫자가 아닐수도 있으니 문자로 변환 후 비교
-        df_result = df_result[df_result["개찰순위"].astype(str).str.strip() == "1"]
-    
-    # 조인 (Notice의 중복 컬럼명에는 _notice 접미사 부여)
-    if "입찰공고번호" in df_notice.columns and "입찰공고번호" in df_result.columns:
-        df_joined = pd.merge(df_result, df_notice, on="입찰공고번호", how="inner", suffixes=("", "_notice"))
-    else:
-        raise ValueError("입찰공고번호 column missing")
+# ── ETL ───────────────────────────────────────────────────────────────────────
+def extract_and_transform(file_path: Path) -> pd.DataFrame:
+    print(f"1. 파일 읽는 중: {file_path}")
 
-    print(f"Joined data size: {len(df_joined)}")
-    
-    # 파생 컬럼 및 정제 (Transform)
-    records = []
-    
-    # 디버그 카운터
-    err_base_est = 0
-    err_adj_rate = 0
-    err_ptype = 0
-    err_parse = 0
-    
-    # 필요한 컬럼만 추출 (공고번호가 동일하게 있지만 suffix 붙었을 수 있음 탐색 방지용)
-    for _, row in df_joined.iterrows():
+    # 인코딩 자동 감지 (utf-8-sig > utf-8 > cp949 순서로 시도)
+    df = None
+    for enc in ["utf-8-sig", "utf-8", "cp949", "utf-16"]:
         try:
-            # 기본 필수항목 파싱
-            b_str = str(row.get("기초금액", 0)).replace(",", "")
-            e_str = str(row.get("예정가격", 0)).replace(",", "")
-            w_str = str(row.get("투찰금액", 0)).replace(",", "")
-            
-            base_price = float(b_str)
-            est_price = float(e_str)
-            winner_price = float(w_str)
-            
-            lower_limit = float(row.get("낙찰하한율", 0))
-            participants = int(row.get("입찰참여자수", 0))
-            
+            df = pd.read_csv(file_path, encoding=enc)
+            # 컬럼 이름에 BOM이나 공백 제거
+            df.columns = df.columns.str.strip().str.replace("\ufeff", "")
+            print(f"  → 인코딩: {enc}, 행 수: {len(df)}")
+            break
+        except (UnicodeDecodeError, pd.errors.ParserError):
+            continue
+
+    if df is None:
+        raise ValueError(f"파일을 읽을 수 없습니다: {file_path}")
+
+    # 필수 컬럼 확인
+    required = ["입찰공고번호", "개찰순위", "면허업종제한목록", "낙찰하한율",
+                "기초금액", "예산가격", "투찰금액", "입찰참여자수"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"필수 컬럼 누락: {missing}\n실제 컬럼: {df.columns.tolist()}")
+
+    # 낙찰자(개찰순위 1) 만 추출
+    df["개찰순위"] = df["개찰순위"].astype(str).str.strip()
+    df_winner = df[df["개찰순위"] == "1"].copy()
+    print(f"  → 1순위(낙찰자) 행: {len(df_winner)}건")
+
+    records = []
+    err_parse = 0
+    err_value = 0
+    err_type  = 0
+
+    for _, row in df_winner.iterrows():
+        try:
+            base_price  = int(str(row["기초금액"]).replace(",", "").strip())
+            est_price   = int(str(row["예산가격"]).replace(",", "").strip())
+            winner_price = int(str(row["투찰금액"]).replace(",", "").strip())
+            participants = int(str(row["입찰참여자수"]).replace(",", "").strip())
+            lower_limit  = float(str(row["낙찰하한율"]).replace(",", "").strip())
+
             # 유효성 검사
             if base_price <= 0 or est_price <= 0 or participants <= 0:
-                err_base_est += 1
+                err_value += 1
                 continue
-                
-            # 사정률 계산
+
+            # 사정률: 예산가격(예정가격) / 기초금액
             adjustment_rate = est_price / base_price
-            
-            # 사정률 이상치 제거 (0.95 ~ 1.05)
             if not (0.95 < adjustment_rate < 1.05):
-                err_adj_rate += 1
+                err_value += 1
                 continue
-                
-            # 사업 유형(공종) 변환 및 복수면 제외
-            p_type = map_project_type(row.get("면허업종제한목록", ""))
-            if not p_type:
-                err_ptype += 1
+
+            # 공종 정규화
+            project_type = normalize_project_type(row.get("면허업종제한목록", ""))
+            if not project_type:
+                err_type += 1
                 continue
-                
-            # 낙찰하한율 단위 변환 (80.xxx 면 0.8xxx 로)
+
+            # 낙찰하한율: 80~90 범위(퍼센트)면 /100
             if lower_limit > 1:
                 lower_limit = lower_limit / 100.0
-                
-            region = str(row.get("현장지역", ""))
-            if pd.isna(region) or not region.strip():
-                region = "unknown" # NULL이 들어오지 않도록
-                
+
+            # 날짜
+            bid_date = None
+            raw_date = str(row.get("투찰일자", "")).strip()
+            if raw_date and raw_date != "nan":
+                for fmt in ["%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"]:
+                    try:
+                        from datetime import datetime
+                        bid_date = datetime.strptime(raw_date, fmt).date()
+                        break
+                    except ValueError:
+                        continue
+
             records.append({
-                "project_id": str(row["입찰공고번호"]),
-                "client_name": None, # nullable
-                "region": region,
-                "project_type": p_type,
-                "base_price": int(base_price),
+                "project_id":       str(row["입찰공고번호"]).strip(),
+                "client_name":      str(row.get("수요기관", "")).strip() or None,
+                "client_id":        str(row.get("수요기관사업자등록번호", "")).strip() or None,
+                "region":           normalize_region(row.get("수요기관지역", "")),
+                "project_type":     project_type,
+                "bid_type":         normalize_bid_type(row.get("낙찰방법", "")),
+                "base_price":       base_price,
                 "lower_limit_rate": lower_limit,
-                "adjustment_rate": adjustment_rate,
-                "winner_price": int(winner_price),
-                "participants": participants,
-                "bid_date": None # nullable
+                "adjustment_rate":  adjustment_rate,
+                "winner_price":     winner_price,
+                "participants":     participants,
+                "bid_date":         bid_date,
             })
-        except Exception as e:
+        except (ValueError, TypeError):
             err_parse += 1
 
-    print(f"Filter drops -> zero values: {err_base_est}, adj_rate: {err_adj_rate}, ptype: {err_ptype}, parse err: {err_parse}")
+    print(f"  → 드롭: 값 오류 {err_value}건, 공종 미매핑 {err_type}건, 파싱 오류 {err_parse}건")
     df_final = pd.DataFrame(records)
-    print(f"Transformed to {len(df_final)} rows to insert.")
+    print(f"  → DB 적재 대상: {len(df_final)}건")
     return df_final
 
 
-async def load_to_db(df: pd.DataFrame):
+async def load_to_db(df: pd.DataFrame) -> tuple[int, int]:
     if df.empty:
-        print("No data to insert.")
-        return
-        
-    print(f"2. Loading {len(df)} records to database...")
+        print("적재할 데이터가 없습니다.")
+        return 0, 0
+
+    print(f"2. DB 적재 중... ({len(df)}건)")
+    inserted = 0
+    skipped  = 0
+
     async with AsyncSessionLocal() as session:
         for idx, row in df.iterrows():
-            bid = BidsHistory(
-                project_id=row["project_id"],
-                client_name=row["client_name"],
-                region=row["region"],
-                project_type=row["project_type"],
-                base_price=row["base_price"],
-                lower_limit_rate=row["lower_limit_rate"],
-                adjustment_rate=row["adjustment_rate"],
-                winner_price=row["winner_price"],
-                participants=row["participants"],
-                bid_date=row["bid_date"]
+            # project_id 중복 체크
+            exists = await session.scalar(
+                select(BidsHistory.id).where(BidsHistory.project_id == row["project_id"])
             )
-            session.add(bid)
-            
-            if idx > 0 and idx % 1000 == 0:
+            if exists:
+                skipped += 1
+                continue
+
+            session.add(BidsHistory(
+                project_id      = row["project_id"],
+                client_name     = row["client_name"],
+                client_id       = row["client_id"],
+                region          = row["region"],
+                project_type    = row["project_type"],
+                bid_type        = row["bid_type"],
+                base_price      = row["base_price"],
+                lower_limit_rate= row["lower_limit_rate"],
+                adjustment_rate = row["adjustment_rate"],
+                winner_price    = row["winner_price"],
+                participants    = row["participants"],
+                bid_date        = row["bid_date"],
+            ))
+            inserted += 1
+
+            if inserted % 500 == 0:
                 await session.commit()
-                print(f"Inserted {idx} rows...")
-                
+                print(f"  → {inserted}건 적재 완료...")
+
         await session.commit()
-        print("Load complete!")
+
+    print(f"  → 신규 {inserted}건 적재 / 중복 {skipped}건 스킵")
+    return inserted, skipped
 
 
 async def main():
-    try:
-        df = extract_and_transform()
-        await load_to_db(df)
-    except Exception as e:
-        print(f"Error during ETL: {e}")
+    parser = argparse.ArgumentParser(description="Info21c 클린 CSV → DB 적재")
+    parser.add_argument("--file", required=True, help="다운로드된 CSV 파일 경로")
+    args = parser.parse_args()
+
+    file_path = Path(args.file)
+    if not file_path.exists():
+        print(f"파일을 찾을 수 없습니다: {file_path}")
+        sys.exit(1)
+
+    df = extract_and_transform(file_path)
+    inserted, skipped = await load_to_db(df)
+    print(f"\n완료: 신규 {inserted}건 / 스킵 {skipped}건")
 
 
 if __name__ == "__main__":

@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Loader2, ChevronDown } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 const FALLBACK_BADGES: Record<string, { label: string; className: string }> = {
@@ -36,8 +35,20 @@ const STRATEGY_TO_LABEL: Record<string, string> = {
   safe: "Safe",
 };
 
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-muted-foreground font-medium">{label}</label>
+      {children}
+    </div>
+  );
+}
+
 export default function BidCalculator() {
   const [bidNoticeId, setBidNoticeId] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [region, setRegion] = useState("");
+  const [projectType, setProjectType] = useState("");
   const [basePrice, setBasePrice] = useState("");
   const [lowerLimitRate, setLowerLimitRate] = useState("");
   const [participants, setParticipants] = useState("");
@@ -57,69 +68,120 @@ export default function BidCalculator() {
       };
       const data = await calculateBid(bidNoticeId.trim(), overrides);
       setResult(data);
-    } catch {
-      toast({ title: "오류", description: "서버 연결 실패. 백엔드가 실행 중인지 확인하세요.", variant: "destructive" });
+      // API 응답값으로 필드 채우기 (빈 필드만)
+      if (!clientName) setClientName(data.fetched.client_name);
+      if (!region) setRegion(data.fetched.region);
+      if (!projectType) setProjectType(data.fetched.project_type);
+      if (!basePrice) setBasePrice(String(data.fetched.base_price));
+      if (!lowerLimitRate) setLowerLimitRate(String(data.fetched.lower_limit_rate));
+      if (!participants) setParticipants(String(data.fetched.participants));
+    } catch (err: any) {
+      const msg = err?.message || "서버 연결 실패. 백엔드가 실행 중인지 확인하세요.";
+      toast({ title: "오류", description: msg, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   };
 
-  const f = result?.fetched;
   const fb = FALLBACK_BADGES[result?.fallback_level ?? ""] ?? FALLBACK_BADGES.default;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold">투찰가 계산</h2>
 
-      <div className="space-y-3">
-        <Input
-          placeholder="예: R25BK00678040"
-          value={bidNoticeId}
-          onChange={(e) => setBidNoticeId(e.target.value)}
-          className="text-lg h-12"
-          onKeyDown={(e) => e.key === "Enter" && handleCalculate()}
-        />
-        <Collapsible>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground">
-              수동 입력 (Override) <ChevronDown className="h-4 w-4" />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-3 pt-2">
-            <Input type="number" placeholder="예: 500000000" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} />
-            <Input type="number" placeholder="예: 0.87745" value={lowerLimitRate} onChange={(e) => setLowerLimitRate(e.target.value)} step="0.00001" />
-            <Input type="number" placeholder="예: 150" value={participants} onChange={(e) => setParticipants(e.target.value)} />
-            <p className="text-xs text-muted-foreground">입력한 항목이 API 조회값을 대체합니다</p>
-          </CollapsibleContent>
-        </Collapsible>
+      <div className="space-y-4">
+        {/* 공고 번호 */}
+        <Field label="공고 번호">
+          <Input
+            placeholder="예: R25BK00678040"
+            value={bidNoticeId}
+            onChange={(e) => setBidNoticeId(e.target.value)}
+            className="text-lg h-12"
+            onKeyDown={(e) => e.key === "Enter" && handleCalculate()}
+          />
+        </Field>
+
+        {/* 데이터 입력 그리드 */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Field label="발주처">
+            <Input
+              placeholder="예: 서울특별시"
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+            />
+          </Field>
+          <Field label="지역">
+            <Input
+              placeholder="예: 서울"
+              value={region}
+              onChange={(e) => setRegion(e.target.value)}
+            />
+          </Field>
+          <Field label="공종">
+            <Input
+              placeholder="예: 조경"
+              value={projectType}
+              onChange={(e) => setProjectType(e.target.value)}
+            />
+          </Field>
+          <Field label="기초금액 (원)">
+            <Input
+              type="number"
+              placeholder="예: 500000000"
+              value={basePrice}
+              onChange={(e) => setBasePrice(e.target.value)}
+            />
+          </Field>
+          <Field label="하한율">
+            <Input
+              type="number"
+              placeholder="예: 0.87745"
+              value={lowerLimitRate}
+              onChange={(e) => setLowerLimitRate(e.target.value)}
+              step="0.00001"
+            />
+          </Field>
+          <Field label="참여업체 수">
+            <Input
+              type="number"
+              placeholder="예: 150"
+              value={participants}
+              onChange={(e) => setParticipants(e.target.value)}
+            />
+          </Field>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          공고 번호만 입력하면 나머지는 자동 조회됩니다. 직접 입력한 항목은 API 조회값을 대체합니다.
+        </p>
+
         <Button onClick={handleCalculate} disabled={loading || !bidNoticeId.trim()} className="w-full h-12 text-base">
           {loading ? <Loader2 className="animate-spin mr-2" /> : null}
           계산하기
         </Button>
       </div>
 
-      {result && f && (
+      {result && (
         <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          {/* 계산 결과 요약 */}
           <Card className="bg-muted">
-            <CardContent className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <div><span className="text-muted-foreground">발주처:</span> {f.client_name}</div>
-              <div><span className="text-muted-foreground">지역:</span> {f.region}</div>
-              <div><span className="text-muted-foreground">공종:</span> {f.project_type}</div>
-              <div><span className="text-muted-foreground">기초금액:</span> {formatNumber(f.base_price)}원</div>
-              <div><span className="text-muted-foreground">하한율:</span> {(f.lower_limit_rate * 100).toFixed(2)}%</div>
-              <div><span className="text-muted-foreground">참여업체:</span> {f.participants}명</div>
-              <div><span className="text-muted-foreground">예측 사정률:</span> {(result.predicted_rate * 100).toFixed(4)}%</div>
-              <div className="flex items-center gap-2">
+            <CardContent className="p-4 flex flex-wrap gap-4 text-sm items-center">
+              <div>
+                <span className="text-muted-foreground">예측 사정률: </span>
+                <span className="font-medium">{(result.predicted_rate * 100).toFixed(4)}%</span>
+              </div>
+              <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground">신뢰도:</span>
                 <Badge className={fb.className}>{fb.label}</Badge>
               </div>
-              <div className="col-span-2 md:col-span-4">
-                <span className="text-muted-foreground">전략:</span>{" "}
+              <div>
+                <span className="text-muted-foreground">전략: </span>
                 <span className="font-medium">{STRATEGY_LABELS[result.strategy] ?? result.strategy}</span>
               </div>
             </CardContent>
           </Card>
 
+          {/* 투찰가 카드 */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {result.bids.map((bid) => {
               const isHighlighted = bid.label === STRATEGY_TO_LABEL[result.strategy];

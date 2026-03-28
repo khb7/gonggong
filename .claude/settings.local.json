@@ -12,7 +12,10 @@
       "Bash(PGPASSWORD=\"\" \"/c/Program Files/PostgreSQL/17/bin/psql.exe\" -U postgres -c \"CREATE DATABASE gonggong;\" 2>&1)",
       "Bash(\"/c/Program Files/PostgreSQL/17/bin/psql.exe\" -U postgres -w -c \"SELECT 1;\" 2>&1)",
       "Bash(PGPASSWORD=\"1234\" \"/c/Program Files/PostgreSQL/17/bin/psql.exe\" -U postgres -w -c \"CREATE DATABASE gonggong;\" 2>&1)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "WebFetch(domain:www.info21c.net)",
+      "WebFetch(domain:infose.info21c.net)",
+      "Bash(mkdir:*)"
     ]
   }
 }

@@ -53,17 +53,29 @@ async def calculate_bid(
     g2b_status = "mock" if settings.use_mock_g2b else "ok"
     try:
         notice = await fetcher.fetch(body.bid_notice_id)
-    except Exception as e:
+    except Exception:
         g2b_status = "failed"
         from app.external.g2b_fetcher import G2BNoticeData
-        # Create empty Notice Data. User must provide overrides.
         notice = G2BNoticeData(
             base_price=0,
             client_name="",
             region="",
             project_type="",
             lower_limit_rate=Decimal("0.87745"),
-            participants=100
+            participants=100,
+        )
+
+    # base_price가 없으면 override 필수
+    if notice.base_price == 0 and (
+        body.overrides is None or body.overrides.base_price is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "기초금액을 자동 조회할 수 없습니다. "
+                "G2B API는 단건 공고 조회를 지원하지 않아 직접 입력이 필요합니다. "
+                "화면에서 '기초금액(원)' 필드에 값을 입력 후 다시 계산하세요."
+            ),
         )
 
     # ── 2. Override 적용 ────────────────────────────────
