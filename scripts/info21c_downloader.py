@@ -118,15 +118,18 @@ async def set_search_filters(
 
     await page.goto(LIST_URL, wait_until="networkidle")
 
-    # ── 날짜 입력 (#from_date, #to_date / YYYY-MM-DD 형식) ────────────────────
+    # ── 날짜 입력 (#config_from_date / #config_to_date) ───────────────────────
+    # playwright fill()은 datepicker에 의해 무시됨 → JS 직접 주입 방식 사용
     fmt_start = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
     fmt_end   = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
 
-    # 화면에 보이는 날짜 필드는 #config_from_date / #config_to_date
-    await page.fill("#config_from_date", fmt_start)
-    await page.keyboard.press("Escape")
-    await page.fill("#config_to_date", fmt_end)
-    await page.keyboard.press("Escape")
+    await page.evaluate(
+        "(args) => { "
+        "  document.querySelector('#config_from_date').value = args[0]; "
+        "  document.querySelector('#config_to_date').value   = args[1]; "
+        "}",
+        [fmt_start, fmt_end]
+    )
     await page.wait_for_timeout(300)
 
     actual_start = await page.input_value("#config_from_date")
@@ -134,8 +137,17 @@ async def set_search_filters(
     print(f"  → 날짜 설정: {actual_start} ~ {actual_end}")
 
     # ── 공종 선택 (#search_code1 셀렉트박스) ──────────────────────────────────
+    # select_option()은 hidden 요소에 timeout됨 → JS 직접 주입 방식 사용
     code_val = LICENSE_CODE_MAP.get(license_type, "C081")
-    await page.select_option("#search_code1", value=code_val)
+    await page.evaluate(
+        "(val) => { "
+        "  var el = document.querySelector('#search_code1'); "
+        "  el.value = val; "
+        "  el.dispatchEvent(new Event('change', {bubbles: true})); "
+        "}",
+        code_val
+    )
+    await page.wait_for_timeout(300)
     print(f"  → 공종 선택: {code_val} ({LICENSE_TYPES.get(license_type)})")
 
     # ── 조회 버튼 (#topSearchBtn) ─────────────────────────────────────────────
@@ -144,10 +156,26 @@ async def set_search_filters(
     # 결과 테이블 행이 실제로 로드될 때까지 대기 (AJAX 응답 완료 확인)
     try:
         await page.wait_for_selector("table tbody tr[data-key]", timeout=TIMEOUT)
-        row_count = await page.locator("table tbody tr[data-key]").count()
-        print(f"  → 검색 완료 ({row_count}건 로드됨)")
     except PWTimeout:
         print("  ⚠ 결과 로딩 타임아웃. 결과가 없거나 느린 응답입니다.")
+        return
+
+    # ── 페이지 크기를 100으로 변경 (기본 15 → 100) ───────────────────────────
+    # name='pageSize' select 가 있으면 100으로 설정 후 결과 재로드 대기
+    changed = await page.evaluate("""
+        () => {
+            var sel = document.querySelector('select[name=pageSize]');
+            if (!sel) return false;
+            sel.value = '100';
+            sel.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+        }
+    """)
+    if changed:
+        await page.wait_for_timeout(1500)  # AJAX 재로드 대기
+
+    row_count = await page.locator("table tbody tr[data-key]").count()
+    print(f"  → 검색 완료 ({row_count}건 로드됨)")
 
     if debug:
         print("  검색 결과를 확인 후 Enter를 누르세요.")
@@ -163,34 +191,32 @@ async def export_csv(page, download_dir: Path, license_type: str, start_date: st
     # 다운로드 파일명 (확장자는 실제 다운로드 후 결정)
     output_stem = download_dir / f"info21c_{license_type}_{start_date}_{end_date}"
 
-    # ── 엑셀 버튼 클릭: span[name='excelSaveBtn'] ─────────────────────────────
+    # ── 엑셀 버튼 클릭 + 다운로드 대기 ──────────────────────────────────────
+    # expect_download는 반드시 클릭 이전에 열어야 다운로드 이벤트를 놓치지 않음
     await page.wait_for_selector("span[name='excelSaveBtn']", timeout=TIMEOUT)
-    await page.click("span[name='excelSaveBtn']")
-    await page.wait_for_timeout(1000)
 
-    # ── 다이얼로그가 열렸는지 확인 ────────────────────────────────────────────
-    # bids.js가 모달을 열 수도 있고 직접 다운로드할 수도 있음
-    # 모달이 열렸으면 옵션 설정 후 다운로드, 없으면 바로 다운로드 대기
-    modal_visible = await page.locator(".modal.in, .modal[style*='display: block'], .modal[style*='display:block']").count() > 0
+    async with page.expect_download(timeout=60_000) as dl_info:
+        await page.click("span[name='excelSaveBtn']")
 
-    if modal_visible:
-        print("  → 내보내기 다이얼로그 감지됨")
-        if debug:
-            print("  다이얼로그 옵션을 확인/설정 후 Enter를 누르세요.")
-            input("  [Enter 계속]")
-        # 다이얼로그 내 다운로드 버튼 클릭
-        async with page.expect_download(timeout=60_000) as dl_info:
+        # 클릭 후 모달이 열리는 경우 → 모달 내 확인 버튼 클릭
+        await page.wait_for_timeout(1500)
+        modal_visible = await page.locator(
+            ".modal.in, .modal[style*='display: block'], .modal[style*='display:block']"
+        ).count() > 0
+
+        if modal_visible:
+            print("  → 내보내기 다이얼로그 감지됨")
+            if debug:
+                print("  다이얼로그 옵션을 확인/설정 후 Enter를 누르세요.")
+                input("  [Enter 계속]")
             for sel in ["button:has-text('확인')", "button:has-text('다운로드')",
                         ".modal button[type='submit']", ".modal .btn-primary"]:
                 loc = page.locator(sel)
                 if await loc.count() > 0:
                     await loc.first.click()
                     break
-    else:
-        # 다이얼로그 없이 바로 다운로드 시작
-        print("  → 직접 다운로드 시작")
-        async with page.expect_download(timeout=60_000) as dl_info:
-            pass  # 이미 클릭됨
+        else:
+            print("  → 직접 다운로드 시작")
 
     download: Download = await dl_info.value
     # 실제 파일명 확장자 사용 (.xlsx 또는 .csv)

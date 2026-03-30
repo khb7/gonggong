@@ -53,7 +53,8 @@ def normalize_region(raw: str) -> str:
 # ── 공종 정규화 ───────────────────────────────────────────────────────────────
 def normalize_project_type(raw: str) -> str | None:
     """
-    '건축공사업[0002]', '0002', '조경식재공사업[0023]' 등 → '실내건축' / '조경'
+    '건축공사업[0002]', '0002', '실내건축[대]', '조경식재공사업[0023]', '조경(조경.체육시설)[대]' 등
+    → '실내건축' / '조경'
     복합 공종('|' 구분) 또는 매핑 없는 코드 → None (필터링)
     """
     if not raw or pd.isna(raw):
@@ -61,9 +62,9 @@ def normalize_project_type(raw: str) -> str | None:
     raw = str(raw)
     if "|" in raw:
         return None  # 복수 공종 제외
-    if "0002" in raw:
+    if "0002" in raw or "실내건축" in raw:
         return "실내건축"
-    if "0023" in raw:
+    if "0023" in raw or "조경" in raw:
         return "조경"
     return None
 
@@ -87,20 +88,56 @@ def normalize_bid_type(raw: str) -> str:
 def extract_and_transform(file_path: Path) -> pd.DataFrame:
     print(f"1. 파일 읽는 중: {file_path}")
 
-    # 인코딩 자동 감지 (utf-8-sig > utf-8 > cp949 순서로 시도)
+    suffix = file_path.suffix.lower()
     df = None
-    for enc in ["utf-8-sig", "utf-8", "cp949", "utf-16"]:
+
+    if suffix in (".xls", ".xlsx"):
+        # xls: xlrd 필요 / xlsx: openpyxl 필요
+        engine = "xlrd" if suffix == ".xls" else "openpyxl"
         try:
-            df = pd.read_csv(file_path, encoding=enc)
-            # 컬럼 이름에 BOM이나 공백 제거
+            kwargs = {"engine": engine}
+            if suffix == ".xls":
+                # Info21c XLS 파일은 OLE2 구조 일부 손상 → relaxed 모드 필요
+                kwargs["engine_kwargs"] = {"ignore_workbook_corruption": True}
+            df = pd.read_excel(file_path, **kwargs)
             df.columns = df.columns.str.strip().str.replace("\ufeff", "")
-            print(f"  → 인코딩: {enc}, 행 수: {len(df)}")
-            break
-        except (UnicodeDecodeError, pd.errors.ParserError):
-            continue
+            print(f"  → Excel({suffix}), 행 수: {len(df)}")
+        except Exception as e:
+            raise ValueError(f"Excel 파일을 읽을 수 없습니다: {file_path} ({e})")
+    else:
+        # CSV: 인코딩 자동 감지
+        for enc in ["utf-8-sig", "utf-8", "cp949", "utf-16"]:
+            try:
+                df = pd.read_csv(file_path, encoding=enc)
+                df.columns = df.columns.str.strip().str.replace("\ufeff", "")
+                print(f"  → 인코딩: {enc}, 행 수: {len(df)}")
+                break
+            except (UnicodeDecodeError, pd.errors.ParserError):
+                continue
 
     if df is None:
         raise ValueError(f"파일을 읽을 수 없습니다: {file_path}")
+
+    # ── 포맷 감지 및 컬럼 정규화 ───────────────────────────────────────────────
+    # 포맷 A (상세): 입찰공고번호, 개찰순위, 면허업종제한목록, 낙찰하한율, 기초금액, ... 포함
+    # 포맷 B (요약): 공고번호, 낙찰기관, 낙찰금액, 예산가격, 1순위낙찰금액, 기준/예가(100%), 구분 포함
+    if "입찰공고번호" not in df.columns and "공고번호" in df.columns:
+        print("  → 요약 포맷(Info21c 낙찰현황) 감지 → 컬럼 매핑 적용")
+        df = df.rename(columns={
+            "공고번호":       "입찰공고번호",
+            "발주기관":       "수요기관",         # client_name, region 추출용
+            "예정가격":       "예산가격",          # 예정가격 → 예산가격(est_price)
+            "1순위투찰금액":  "투찰금액",          # winner_price
+            "개찰일":         "투찰일자",
+            "업종":           "면허업종제한목록",  # project_type
+        })
+        # 요약 포맷에서 없는 컬럼 기본값으로 채우기
+        df["개찰순위"]              = "1"         # 모두 낙찰자(1순위) 데이터
+        df["낙찰하한율"]            = 0.87745     # 법정 고정값
+        df["입찰참여자수"]          = 0           # 요약 포맷에서 미제공
+        df["수요기관지역"]          = df["수요기관"]  # region 추출에 재사용
+        df["수요기관사업자등록번호"] = None
+        df["낙찰방법"]              = "적격심사"  # 공사낙찰 목록 = 적격심사
 
     # 필수 컬럼 확인
     required = ["입찰공고번호", "개찰순위", "면허업종제한목록", "낙찰하한율",
@@ -121,14 +158,14 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
 
     for _, row in df_winner.iterrows():
         try:
-            base_price  = int(str(row["기초금액"]).replace(",", "").strip())
-            est_price   = int(str(row["예산가격"]).replace(",", "").strip())
-            winner_price = int(str(row["투찰금액"]).replace(",", "").strip())
-            participants = int(str(row["입찰참여자수"]).replace(",", "").strip())
+            base_price  = int(float(str(row["기초금액"]).replace(",", "").strip()))
+            est_price   = int(float(str(row["예산가격"]).replace(",", "").strip()))
+            winner_price = int(float(str(row["투찰금액"]).replace(",", "").strip()))
+            participants = int(float(str(row["입찰참여자수"]).replace(",", "").strip()))
             lower_limit  = float(str(row["낙찰하한율"]).replace(",", "").strip())
 
-            # 유효성 검사
-            if base_price <= 0 or est_price <= 0 or participants <= 0:
+            # 유효성 검사 (participants=0은 요약 포맷에서 허용)
+            if base_price <= 0 or est_price <= 0:
                 err_value += 1
                 continue
 
@@ -152,7 +189,7 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             bid_date = None
             raw_date = str(row.get("투찰일자", "")).strip()
             if raw_date and raw_date != "nan":
-                for fmt in ["%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"]:
+                for fmt in ["%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d", "%y.%m.%d", "%y-%m-%d"]:
                     try:
                         from datetime import datetime
                         bid_date = datetime.strptime(raw_date, fmt).date()

@@ -17,7 +17,7 @@ from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type, normalize_bid_type
 from app.data.fallback import get_rates_with_fallback, LEVEL_NONE
 from app.db.models import ProjectBucket
-from app.engine.statistics import trimmed_median, mad
+from app.engine.statistics import trimmed_median, mad, confidence_range
 from app.engine.calculator import calculate_bid_spread
 from app.schemas.request import BidRequest
 from app.schemas.response import BidResponse, FetchedData
@@ -89,7 +89,8 @@ async def calculate_bid(
     client_id = notice.client_id
     region = normalize_region(notice.region)
     project_type = normalize_project_type(notice.project_type) or notice.project_type
-    bid_type = notice.bid_type
+    # base_price=0 이면 G2B 공고 미확인 → bid_type도 신뢰 불가, 기본값 사용
+    bid_type = notice.bid_type if notice.base_price > 0 else TARGET_BID_TYPE
 
     if body.overrides:
         mode = "override"
@@ -145,6 +146,17 @@ async def calculate_bid(
         predicted_rate = trimmed_median(rates)
         mad_val = mad(rates)
 
+    # ── 5-1. 예측 구간 및 신뢰도 등급 계산 ──────────────
+    rate_lower, rate_upper = confidence_range(predicted_rate, mad_val)
+    if fallback_level == "default":
+        confidence_grade = "low"
+    elif mad_val <= Decimal("0.003"):
+        confidence_grade = "high"
+    elif mad_val <= Decimal("0.007"):
+        confidence_grade = "medium"
+    else:
+        confidence_grade = "low"
+
     # ── 6. 투찰가 계산 (Multi-Shot Bid Spread) ──────────
     result = calculate_bid_spread(
         base_price=base_price,
@@ -171,6 +183,8 @@ async def calculate_bid(
         strategy=result["strategy"],
         predicted_rate=float(predicted_rate),
         mad_value=float(mad_val),
+        prediction_range=[float(rate_lower), float(rate_upper)],
+        confidence_grade=confidence_grade,
         fallback_level=fallback_level,
         bids=result["bids"],
     )
