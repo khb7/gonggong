@@ -37,6 +37,8 @@ class BidResponse(BaseModel):
     strategy: str = Field(..., description='"safe" | "normal" | "aggressive"')
     predicted_rate: float = Field(..., description="사정률 예측값 (Trimmed Median)")
     mad_value: float = Field(..., description="MAD 값")
+    prediction_range: list[float] = Field(..., description="예측 구간 [lower, upper] = predicted_rate ± MAD")
+    confidence_grade: str = Field(..., description='신뢰도 등급: "high" (MAD≤0.003) | "medium" (≤0.007) | "low" (>0.007)')
     fallback_level: str = Field(..., description="사용된 Fallback 레벨")
 
     bids: list[BidItem] = Field(..., description="추천 투찰가 목록 (Aggressive → Safe)")

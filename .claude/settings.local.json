@@ -15,7 +15,9 @@
       "Bash(pip install:*)",
       "WebFetch(domain:www.info21c.net)",
       "WebFetch(domain:infose.info21c.net)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(curl:*)",
+      "Bash(netstat:*)"
     ]
   }
 }
