@@ -17,7 +17,15 @@
       "WebFetch(domain:infose.info21c.net)",
       "Bash(mkdir:*)",
       "Bash(curl:*)",
-      "Bash(netstat:*)"
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(kill 779:*)",
+      "Bash(tasklist:*)",
+      "Bash(cargo:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(rtk git:*)",
+      "Bash(ls:*)"
     ]
   }
 }
