@@ -12,10 +12,13 @@ ETL 적재 후 bids_history 데이터 품질 자동 검증.
 """
 
 import asyncio
+import io
 import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 import asyncpg
 
