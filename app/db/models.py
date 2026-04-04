@@ -55,6 +55,10 @@ class BidsHistory(Base):
         String(30), nullable=False, server_default="기타",
         comment="예정가격 결정방식: 복수예비가격 / 고정예정가격 / 기타"
     )
+    g2b_code: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, index=True,
+        comment="나라장터 공사 분류 코드 (g2b분류)"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
