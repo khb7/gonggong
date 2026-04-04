@@ -134,11 +134,13 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             "개찰일":         "투찰일자",
             "업종":           "면허업종제한목록",
             "지역":           "수요기관지역",      # 지역 컬럼 직접 사용
+            "업체수":         "입찰참여자수",       # 실제 참여 업체수
         })
         # 요약 포맷에서 없는 컬럼 기본값으로 채우기
         df["개찰순위"]              = "1"
-        df["낙찰하한율"]            = 0.87745
-        df["입찰참여자수"]          = 0
+        df["낙찰하한율"]            = 0.87745   # fallback; 낙찰하한가 컬럼 있으면 루프에서 재계산
+        if "입찰참여자수" not in df.columns:
+            df["입찰참여자수"]      = 0
         if "수요기관지역" not in df.columns:
             df["수요기관지역"]      = "기타"      # 구버전 파일 (지역 컬럼 없는 경우)
         df["수요기관사업자등록번호"] = None
@@ -186,8 +188,11 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 err_type += 1
                 continue
 
-            # 낙찰하한율: 80~90 범위(퍼센트)면 /100
-            if lower_limit > 1:
+            # 낙찰하한율: 낙찰하한가 컬럼 있으면 낙찰하한가/예정가격으로 계산
+            raw_llh = row.get("낙찰하한가", None)
+            if raw_llh is not None and str(raw_llh).strip() not in ("", "nan", "0"):
+                lower_limit = float(str(raw_llh).replace(",", "").strip()) / est_price
+            elif lower_limit > 1:
                 lower_limit = lower_limit / 100.0
 
             # 날짜
