@@ -29,7 +29,10 @@
       "Bash(rtk curl:*)",
       "Bash(claude mcp:*)",
       "Bash(xargs cat:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(mv:*)",
+      "Bash(alembic revision:*)",
+      "Bash(rtk pytest:*)"
     ]
   }
 }
