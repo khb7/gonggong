@@ -37,15 +37,15 @@ def is_valid_region(region: str) -> bool:
     return all(p in REGION_WHITELIST for p in parts)
 
 
-async def validate(conn) -> tuple[list[str], list[str]]:
-    """(warnings, failures) 반환."""
+async def validate(conn) -> tuple[list[str], list[str], int]:
+    """(warnings, failures, total) 반환."""
     warnings = []
     failures = []
     total = await conn.fetchval("SELECT COUNT(*) FROM bids_history")
 
     if total == 0:
         failures.append("bids_history가 비어있음 — ETL을 먼저 실행하세요")
-        return warnings, failures
+        return warnings, failures, 0
 
     print(f"\n총 레코드: {total}건\n")
 
@@ -76,10 +76,13 @@ async def validate(conn) -> tuple[list[str], list[str]]:
         "SELECT DISTINCT region FROM bids_history"
     )
     invalid_regions = [r["region"] for r in regions if not is_valid_region(r["region"])]
-    invalid_count = await conn.fetchval(
-        "SELECT COUNT(*) FROM bids_history WHERE region = ANY($1::text[])",
-        invalid_regions if invalid_regions else ["__NEVER_MATCH__"],
-    )
+    if invalid_regions:
+        invalid_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM bids_history WHERE region = ANY($1::text[])",
+            invalid_regions,
+        )
+    else:
+        invalid_count = 0
     invalid_pct = invalid_count / total * 100
     print(f"[region] 화이트리스트 외 값 비율: {invalid_pct:.1f}% ({invalid_count}/{total})")
     if invalid_regions:
@@ -104,14 +107,14 @@ async def validate(conn) -> tuple[list[str], list[str]]:
     pm_dist = await conn.fetch(
         "SELECT price_method, COUNT(*) as cnt FROM bids_history GROUP BY price_method ORDER BY cnt DESC"
     )
-    print(f"[price_method] 분포:")
+    print("[price_method] 분포:")
     for r in pm_dist:
         print(f"  {r['price_method']}: {r['cnt']}건 ({r['cnt']/total*100:.1f}%)")
 
-    return warnings, failures
+    return warnings, failures, total
 
 
-async def print_summary(conn, total: int):
+async def print_summary(conn):
     """추가 통계 출력."""
     print("\n─── 공종별 / 버킷별 분포 ───")
     pt = await conn.fetch(
@@ -161,15 +164,14 @@ async def print_summary(conn, total: int):
 async def main():
     conn = await asyncpg.connect(DB_URL)
     try:
-        total = await conn.fetchval("SELECT COUNT(*) FROM bids_history")
         print("=" * 50)
         print("  bids_history 데이터 품질 검증")
         print("=" * 50)
 
-        warnings, failures = await validate(conn)
+        warnings, failures, total = await validate(conn)
 
         if total > 0:
-            await print_summary(conn, total)
+            await print_summary(conn)
 
         print("\n" + "=" * 50)
         if failures:
