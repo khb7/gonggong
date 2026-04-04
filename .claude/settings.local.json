@@ -25,7 +25,11 @@
       "Bash(gh api:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(rtk git:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(rtk curl:*)",
+      "Bash(claude mcp:*)",
+      "Bash(xargs cat:*)",
+      "Bash(python3:*)"
     ]
   }
 }

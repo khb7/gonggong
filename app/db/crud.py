@@ -6,7 +6,7 @@ DB 조회/저장 로직 (비동기 SQLAlchemy)
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BidsHistory, ClientStatistics
@@ -91,10 +91,13 @@ async def get_rates_by_region(
     bucket_id: int,
     bid_type: str = TARGET_BID_TYPE,
 ) -> list[Decimal]:
-    """지역 + 공종 + 버킷 기준 사정률 리스트 반환."""
+    """지역 + 공종 + 버킷 기준 사정률 리스트 반환.
+    region 값이 '전국,경기' 처럼 복합값일 수 있으므로 LIKE 매칭 사용.
+    예: region='경기' → '경기', '전국,경기', '인천,경기' 모두 포함.
+    """
     result = await db.execute(
         select(BidsHistory.adjustment_rate).where(
-            BidsHistory.region == region,
+            BidsHistory.region.like(f"%{region}%"),
             BidsHistory.project_type == project_type,
             _bucket_filter(bucket_id),
             _bid_type_filter(bid_type),

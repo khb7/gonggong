@@ -30,24 +30,11 @@ from app.db.session import AsyncSessionLocal
 from app.db.models import BidsHistory
 
 
-# ── 지역명 정규화 ─────────────────────────────────────────────────────────────
-REGION_MAP = {
-    "서울": "서울", "부산": "부산", "대구": "대구", "인천": "인천",
-    "광주": "광주", "대전": "대전", "울산": "울산", "세종": "세종",
-    "경기": "경기", "강원": "강원", "충북": "충북", "충남": "충남",
-    "전북": "전북", "전남": "전남", "경북": "경북", "경남": "경남",
-    "제주": "제주",
-}
-
 def normalize_region(raw: str) -> str:
-    """'경기도 수원시 팔달구' → '경기'"""
+    """지역 컬럼 값 그대로 사용. '전국,경기', '경기', '전국' 등."""
     if not raw or pd.isna(raw):
         return "기타"
-    raw = str(raw).strip()
-    for key in REGION_MAP:
-        if raw.startswith(key):
-            return REGION_MAP[key]
-    return raw[:2] if len(raw) >= 2 else "기타"
+    return str(raw).strip()
 
 
 # ── 공종 정규화 ───────────────────────────────────────────────────────────────
@@ -125,19 +112,21 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
         print("  → 요약 포맷(Info21c 낙찰현황) 감지 → 컬럼 매핑 적용")
         df = df.rename(columns={
             "공고번호":       "입찰공고번호",
-            "발주기관":       "수요기관",         # client_name, region 추출용
-            "예정가격":       "예산가격",          # 예정가격 → 예산가격(est_price)
-            "1순위투찰금액":  "투찰금액",          # winner_price
+            "발주기관":       "수요기관",
+            "예정가격":       "예산가격",
+            "1순위투찰금액":  "투찰금액",
             "개찰일":         "투찰일자",
-            "업종":           "면허업종제한목록",  # project_type
+            "업종":           "면허업종제한목록",
+            "지역":           "수요기관지역",      # 지역 컬럼 직접 사용
         })
         # 요약 포맷에서 없는 컬럼 기본값으로 채우기
-        df["개찰순위"]              = "1"         # 모두 낙찰자(1순위) 데이터
-        df["낙찰하한율"]            = 0.87745     # 법정 고정값
-        df["입찰참여자수"]          = 0           # 요약 포맷에서 미제공
-        df["수요기관지역"]          = df["수요기관"]  # region 추출에 재사용
+        df["개찰순위"]              = "1"
+        df["낙찰하한율"]            = 0.87745
+        df["입찰참여자수"]          = 0
+        if "수요기관지역" not in df.columns:
+            df["수요기관지역"]      = "기타"      # 구버전 파일 (지역 컬럼 없는 경우)
         df["수요기관사업자등록번호"] = None
-        df["낙찰방법"]              = "적격심사"  # 공사낙찰 목록 = 적격심사
+        df["낙찰방법"]              = "적격심사"
 
     # 필수 컬럼 확인
     required = ["입찰공고번호", "개찰순위", "면허업종제한목록", "낙찰하한율",
@@ -220,49 +209,67 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
     return df_final
 
 
-async def load_to_db(df: pd.DataFrame) -> tuple[int, int]:
+async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
+    """
+    upsert=False (기본): 신규만 삽입, 기존 project_id 스킵
+    upsert=True: 기존 레코드도 region 포함 전체 필드 업데이트
+    """
     if df.empty:
         print("적재할 데이터가 없습니다.")
         return 0, 0
 
-    print(f"2. DB 적재 중... ({len(df)}건)")
+    print(f"2. DB 적재 중... ({len(df)}건, upsert={upsert})")
     inserted = 0
-    skipped  = 0
+    updated  = 0
 
     async with AsyncSessionLocal() as session:
-        for idx, row in df.iterrows():
-            # project_id 중복 체크
-            exists = await session.scalar(
-                select(BidsHistory.id).where(BidsHistory.project_id == row["project_id"])
+        for _, row in df.iterrows():
+            existing = await session.scalar(
+                select(BidsHistory).where(BidsHistory.project_id == row["project_id"])
             )
-            if exists:
-                skipped += 1
+            if existing:
+                if upsert:
+                    existing.client_name      = row["client_name"]
+                    existing.client_id        = row["client_id"]
+                    existing.region           = row["region"]
+                    existing.project_type     = row["project_type"]
+                    existing.bid_type         = row["bid_type"]
+                    existing.base_price       = row["base_price"]
+                    existing.lower_limit_rate = row["lower_limit_rate"]
+                    existing.adjustment_rate  = row["adjustment_rate"]
+                    existing.winner_price     = row["winner_price"]
+                    existing.participants     = row["participants"]
+                    existing.bid_date         = row["bid_date"]
+                    updated += 1
+                else:
+                    updated += 1  # skipped count
                 continue
 
             session.add(BidsHistory(
-                project_id      = row["project_id"],
-                client_name     = row["client_name"],
-                client_id       = row["client_id"],
-                region          = row["region"],
-                project_type    = row["project_type"],
-                bid_type        = row["bid_type"],
-                base_price      = row["base_price"],
-                lower_limit_rate= row["lower_limit_rate"],
-                adjustment_rate = row["adjustment_rate"],
-                winner_price    = row["winner_price"],
-                participants    = row["participants"],
-                bid_date        = row["bid_date"],
+                project_id       = row["project_id"],
+                client_name      = row["client_name"],
+                client_id        = row["client_id"],
+                region           = row["region"],
+                project_type     = row["project_type"],
+                bid_type         = row["bid_type"],
+                base_price       = row["base_price"],
+                lower_limit_rate = row["lower_limit_rate"],
+                adjustment_rate  = row["adjustment_rate"],
+                winner_price     = row["winner_price"],
+                participants     = row["participants"],
+                bid_date         = row["bid_date"],
             ))
             inserted += 1
 
-            if inserted % 500 == 0:
+            if (inserted + updated) % 500 == 0:
                 await session.commit()
-                print(f"  → {inserted}건 적재 완료...")
+                print(f"  → {inserted}건 적재 / {updated}건 {'업데이트' if upsert else '스킵'}...")
 
         await session.commit()
 
-    print(f"  → 신규 {inserted}건 적재 / 중복 {skipped}건 스킵")
-    return inserted, skipped
+    label = "업데이트" if upsert else "스킵"
+    print(f"  → 신규 {inserted}건 적재 / 기존 {updated}건 {label}")
+    return inserted, updated
 
 
 async def main():

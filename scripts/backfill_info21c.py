@@ -82,8 +82,9 @@ async def _download_and_etl(
     user_id: str,
     password: str,
     label: str,
+    upsert: bool = False,
 ) -> tuple[int, int, int]:
-    """다운로드 + ETL. (raw_count, inserted, skipped) 반환. 실패 시 (0, 0, 0)."""
+    """다운로드 + ETL. (raw_count, inserted, updated) 반환. 실패 시 (0, 0, 0)."""
     try:
         path = await run_download(
             start_date=start,
@@ -102,8 +103,8 @@ async def _download_and_etl(
 
     try:
         df = extract_and_transform(path)
-        ins, skip = await load_to_db(df)
-        return raw, ins, skip
+        ins, upd = await load_to_db(df, upsert=upsert)
+        return raw, ins, upd
     except Exception as e:
         print(f"    [{label}] ETL 실패: {e}")
         return raw, 0, 0
@@ -115,6 +116,7 @@ async def process_month(
     license_type: str,
     user_id: str,
     password: str,
+    upsert: bool = False,
 ) -> dict:
     """
     한 달치 다운로드 + ETL.
@@ -125,40 +127,40 @@ async def process_month(
     month = int(start[4:6])
     label = f"{year}-{month:02d} {LICENSE_TYPES[license_type]}"
 
-    raw, ins, skip = await _download_and_etl(start, end, license_type, user_id, password, label)
+    raw, ins, upd = await _download_and_etl(start, end, license_type, user_id, password, label, upsert)
 
     if raw < 100:
-        print(f"  [{label}] {raw}건 → 신규 {ins}건 / 스킵 {skip}건")
-        return {"label": label, "inserted": ins, "skipped": skip, "split": False}
+        print(f"  [{label}] {raw}건 → 신규 {ins}건 / {'업데이트' if upsert else '스킵'} {upd}건")
+        return {"label": label, "inserted": ins, "split": False}
 
     # ── 100건 한계 → 주별 재분할 ─────────────────────────
     print(f"  [{label}] {raw}건 한계 도달 → 주별 재분할")
     weeks = week_ranges(year, month)
-    total_ins, total_skip = 0, 0
+    total_ins = 0
 
     for w_start, w_end in weeks:
         w_label = f"{label}/{w_start[6:]}~{w_end[6:]}"
-        w_raw, w_ins, w_skip = await _download_and_etl(
-            w_start, w_end, license_type, user_id, password, w_label
+        w_raw, w_ins, w_upd = await _download_and_etl(
+            w_start, w_end, license_type, user_id, password, w_label, upsert
         )
         print(f"    [{w_label}] {w_raw}건 → 신규 {w_ins}건")
         if w_raw >= 100:
             print(f"    [{w_label}] [경고] 주별에서도 100건 한계 - 데이터 누락 가능")
-        total_ins  += w_ins
-        total_skip += w_skip
+        total_ins += w_ins
         await asyncio.sleep(1)
 
-    print(f"  [{label}] 주별 완료: 신규 {total_ins}건 / 스킵 {total_skip}건")
-    return {"label": label, "inserted": total_ins, "skipped": total_skip, "split": True}
+    print(f"  [{label}] 주별 완료: 신규 {total_ins}건")
+    return {"label": label, "inserted": total_ins, "split": True}
 
 
 async def main():
     parser = argparse.ArgumentParser(description="Info21c 월별 일괄 백필 (100건 시 주별 자동 재분할)")
-    parser.add_argument("--start", type=int, required=True, help="시작 연도 (예: 2023)")
-    parser.add_argument("--end",   type=int, required=True, help="종료 연도 (예: 2025)")
-    parser.add_argument("--type",  choices=["0002", "0023", "all"], default="all")
-    parser.add_argument("--id",    default=DEFAULT_ID)
-    parser.add_argument("--pw",    default=DEFAULT_PW)
+    parser.add_argument("--start",  type=int, required=True, help="시작 연도 (예: 2023)")
+    parser.add_argument("--end",    type=int, required=True, help="종료 연도 (예: 2025)")
+    parser.add_argument("--type",   choices=["0002", "0023", "all"], default="all")
+    parser.add_argument("--upsert", action="store_true", help="기존 레코드도 업데이트 (재수집 시 사용)")
+    parser.add_argument("--id",     default=DEFAULT_ID)
+    parser.add_argument("--pw",     default=DEFAULT_PW)
     args = parser.parse_args()
 
     types  = list(LICENSE_TYPES.keys()) if args.type == "all" else [args.type]
@@ -172,7 +174,7 @@ async def main():
 
     for license_type in types:
         for start, end in months:
-            result = await process_month(start, end, license_type, args.id, args.pw)
+            result = await process_month(start, end, license_type, args.id, args.pw, args.upsert)
             total_inserted += result.get("inserted", 0)
             if result.get("split"):
                 split_months.append(result["label"])

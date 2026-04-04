@@ -59,9 +59,19 @@ app/
 alembic/                    # DB 마이그레이션
 tests/                      # pytest 테스트
 md/                         # 설계 문서
-  ├── data_collection.md        # 수집 파이프라인 설계
-  ├── data_collection_fixes.md  # 설계 수정사항
-  └── bidding_engine_design.md  # 엔진 설계
+  ├── design/                   # 시스템 설계
+  │   ├── bidding_engine_design.md
+  │   └── bid_participants_design.md
+  ├── data/                     # 데이터 수집 관련
+  │   ├── data_collection.md
+  │   └── data_collection_fixes.md
+  ├── plans/                    # 실행 계획
+  │   ├── plan_info21c.md
+  │   └── implementation_plan.md
+  ├── status/                   # 진행 상황 / 회의록
+  │   └── progress.md
+  ├── reference/                # 참고 자료
+  └── raw/                      # 원본 데이터 파일 (csv, xlsx 등)
 ```
 
 ---
@@ -158,7 +168,7 @@ python scripts/etl_csv.py --file data/downloads/info21c_0023_20250101_20251231.c
 ```
 
 Info21c 접속: `https://www.info21c.net/` / ID `nw8856` / PW `nw8856` (동시 접속 불가, 오전 주의)
-상세 계획: `md/plan_info21c.md`
+상세 계획: `md/plans/plan_info21c.md`
 
 ### 경로 B: G2B API 백필 (보완용, 미구현)
 
@@ -174,7 +184,7 @@ app/
     └── refresh_stats.py        # client_statistics 갱신 (선택)
 ```
 
-설계: `md/data_collection.md` / 수정사항: `md/data_collection_fixes.md`
+설계: `md/data/data_collection.md` / 수정사항: `md/data/data_collection_fixes.md`
 
 ---
 
