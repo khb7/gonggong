@@ -138,3 +138,19 @@ def test_region_stored_correctly():
     path = make_csv([BASE_ROW])
     df = extract_and_transform(path)
     assert df.iloc[0]["region"] == "경기"
+
+
+# ── validate_data.py 헬퍼 테스트 ─────────────────────────────────────────────
+from scripts.validate_data import is_valid_region
+
+def test_is_valid_region_단일():
+    assert is_valid_region("경기") is True
+
+def test_is_valid_region_조합():
+    assert is_valid_region("전국,경기") is True
+
+def test_is_valid_region_잘린_기관명():
+    assert is_valid_region("(재") is False
+
+def test_is_valid_region_국군():
+    assert is_valid_region("국군") is False
