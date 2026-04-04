@@ -71,6 +71,19 @@ def normalize_bid_type(raw: str) -> str:
     return "기타"
 
 
+# ── 예정가격결정방식 정규화 ────────────────────────────────────────────────────
+def normalize_price_method(raw: str) -> str:
+    """'복수예비가격' / '고정예정가격' 외 → '기타'"""
+    if not raw or pd.isna(raw):
+        return "기타"
+    raw = str(raw).strip()
+    if "복수예비가격" in raw:
+        return "복수예비가격"
+    if "고정예정가격" in raw:
+        return "고정예정가격"
+    return "기타"
+
+
 # ── ETL ───────────────────────────────────────────────────────────────────────
 def extract_and_transform(file_path: Path) -> pd.DataFrame:
     print(f"1. 파일 읽는 중: {file_path}")
@@ -186,6 +199,24 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                     except ValueError:
                         continue
 
+            # ── price_method ─────────────────────────────────────────────
+            raw_pm = row.get("예정가격결정방식", "")
+            price_method = normalize_price_method(str(raw_pm) if raw_pm else "")
+
+            # ── 1순위사정율: 있으면 직접 사용, 없으면 예산가격/기초금액 ──────
+            raw_sar = row.get("1순위사정율", None)
+            if raw_sar is not None and str(raw_sar).strip() not in ("", "nan"):
+                sar = float(str(raw_sar).replace(",", "").strip())
+                if sar > 1:      # 퍼센트 단위 (예: 99.71) → 소수
+                    sar = sar / 100.0
+                adjustment_rate = sar
+            # adjustment_rate는 이미 위에서 est_price/base_price로 계산됨
+            # 1순위사정율이 있으면 덮어쓴다
+
+            # ── g2b_code ─────────────────────────────────────────────────
+            raw_g2b = row.get("g2b분류", None)
+            g2b_code = str(raw_g2b).strip() if raw_g2b and str(raw_g2b).strip() not in ("", "nan") else None
+
             records.append({
                 "project_id":       str(row["입찰공고번호"]).strip(),
                 "client_name":      str(row.get("수요기관", "")).strip() or None,
@@ -193,12 +224,14 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 "region":           normalize_region(row.get("수요기관지역", "")),
                 "project_type":     project_type,
                 "bid_type":         normalize_bid_type(row.get("낙찰방법", "")),
+                "price_method":     price_method,
                 "base_price":       base_price,
                 "lower_limit_rate": lower_limit,
                 "adjustment_rate":  adjustment_rate,
                 "winner_price":     winner_price,
                 "participants":     participants,
                 "bid_date":         bid_date,
+                "g2b_code":         g2b_code,
             })
         except (ValueError, TypeError):
             err_parse += 1
@@ -234,12 +267,14 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                     existing.region           = row["region"]
                     existing.project_type     = row["project_type"]
                     existing.bid_type         = row["bid_type"]
+                    existing.price_method     = row["price_method"]   # 추가
                     existing.base_price       = row["base_price"]
                     existing.lower_limit_rate = row["lower_limit_rate"]
                     existing.adjustment_rate  = row["adjustment_rate"]
                     existing.winner_price     = row["winner_price"]
                     existing.participants     = row["participants"]
                     existing.bid_date         = row["bid_date"]
+                    existing.g2b_code         = row["g2b_code"]       # 추가
                     updated += 1
                 else:
                     updated += 1  # skipped count
@@ -252,12 +287,14 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                 region           = row["region"],
                 project_type     = row["project_type"],
                 bid_type         = row["bid_type"],
+                price_method     = row["price_method"],   # 추가
                 base_price       = row["base_price"],
                 lower_limit_rate = row["lower_limit_rate"],
                 adjustment_rate  = row["adjustment_rate"],
                 winner_price     = row["winner_price"],
                 participants     = row["participants"],
                 bid_date         = row["bid_date"],
+                g2b_code         = row["g2b_code"],       # 추가
             ))
             inserted += 1
 
