@@ -13,6 +13,9 @@ Info21c 클린 CSV → bids_history DB 적재 스크립트.
   입찰공고번호, 개찰순위, 면허업종제한목록, 낙찰하한율, 투찰율,
   낙찰자선정여부, 투찰일자, 낙찰방법, 수요기관, 수요기관지역,
   수요기관사업자등록번호, 기초금액, 예산가격, 투찰금액, 입찰참여자수
+
+있으면 좋은 컬럼 (없어도 동작):
+  예정가격결정방식, 1순위사정율, g2b분류
 """
 
 import argparse
@@ -210,6 +213,9 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 if sar > 1:      # 퍼센트 단위 (예: 99.71) → 소수
                     sar = sar / 100.0
                 adjustment_rate = sar
+                if not (0.95 < adjustment_rate < 1.05):
+                    err_value += 1
+                    continue
             # adjustment_rate는 이미 위에서 est_price/base_price로 계산됨
             # 1순위사정율이 있으면 덮어쓴다
 

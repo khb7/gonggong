@@ -94,6 +94,14 @@ def test_adjustment_rate_computed_when_column_missing():
     assert abs(float(df.iloc[0]["adjustment_rate"]) - 1.0) < 0.0001
 
 
+def test_adjustment_rate_from_1순위사정율_out_of_range_is_dropped():
+    """1순위사정율이 범위(0.95~1.05) 밖이면 해당 행을 드롭한다."""
+    row = {**BASE_ROW, "1순위사정율": "50.0"}  # 0.50 → 범위 밖
+    path = make_csv([row])
+    df = extract_and_transform(path)
+    assert len(df) == 0  # 드롭됨
+
+
 # ── g2b_code 처리 ────────────────────────────────────────────────────────────
 
 def test_g2b_code_stored_when_column_exists():
