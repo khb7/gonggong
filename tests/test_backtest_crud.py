@@ -78,3 +78,30 @@ async def test_get_all_rates_with_before_date():
     assert len(rates) == 2
     sql = _get_sql(db)
     assert "bid_date" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_rates_by_region_without_before_date():
+    db = _make_db([0.999, 1.001])
+    rates = await get_rates_by_region(db, "경기", "조경", 1)
+    assert len(rates) == 2
+    sql = _get_sql(db)
+    assert "bid_date" not in sql
+
+
+@pytest.mark.asyncio
+async def test_get_rates_by_type_and_bucket_without_before_date():
+    db = _make_db([1.0])
+    rates = await get_rates_by_type_and_bucket(db, "조경", 1)
+    assert len(rates) == 1
+    sql = _get_sql(db)
+    assert "bid_date" not in sql
+
+
+@pytest.mark.asyncio
+async def test_get_all_rates_without_before_date():
+    db = _make_db([0.998])
+    rates = await get_all_rates(db, "건축")
+    assert len(rates) == 1
+    sql = _get_sql(db)
+    assert "bid_date" not in sql

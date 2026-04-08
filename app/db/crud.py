@@ -6,7 +6,7 @@ DB 조회/저장 로직 (비동기 SQLAlchemy)
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select, and_, func, or_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BidsHistory, ClientStatistics
