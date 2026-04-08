@@ -6,8 +6,8 @@ Info21c 클린 CSV → bids_history DB 적재 스크립트.
   - 내보내기 옵션: CSV, 쉼표 구분자, 리포트제목 OFF, 필터세부사항 OFF
 
 사용법:
-  python scripts/etl_csv.py --file data/downloads/info21c_0002_20250101_20251231.csv
-  python scripts/etl_csv.py --file data/downloads/info21c_0023_20250101_20251231.csv
+  python scripts/etl_csv.py --file data/downloads/info21c_조경_20250101_20250131.xls
+  python scripts/etl_csv.py --file data/downloads/info21c_건축_20250101_20250131.xls
 
 기대 컬럼 (첫 행이 헤더):
   입찰공고번호, 개찰순위, 면허업종제한목록, 낙찰하한율, 투찰율,
@@ -43,8 +43,8 @@ def normalize_region(raw: str) -> str:
 # ── 공종 정규화 ───────────────────────────────────────────────────────────────
 def normalize_project_type(raw: str) -> str | None:
     """
-    '건축공사업[0002]', '0002', '실내건축[대]', '조경식재공사업[0023]', '조경(조경.체육시설)[대]' 등
-    → '실내건축' / '조경'
+    '건축,토건', '조경(식재.시설물)[대](주력:조경식재)' 등 Info21c 업종 컬럼 값
+    → '건축' / '조경'
     복합 공종('|' 구분) 또는 매핑 없는 코드 → None (필터링)
     """
     if not raw or pd.isna(raw):
@@ -52,10 +52,10 @@ def normalize_project_type(raw: str) -> str | None:
     raw = str(raw)
     if "|" in raw:
         return None  # 복수 공종 제외
-    if "0002" in raw or "실내건축" in raw:
-        return "실내건축"
-    if "0023" in raw or "조경" in raw:
+    if "조경" in raw:
         return "조경"
+    if "건축" in raw or "토건" in raw:
+        return "건축"
     return None
 
 
@@ -127,14 +127,16 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
     if "입찰공고번호" not in df.columns and "공고번호" in df.columns:
         print("  → 요약 포맷(Info21c 낙찰현황) 감지 → 컬럼 매핑 적용")
         df = df.rename(columns={
-            "공고번호":       "입찰공고번호",
-            "발주기관":       "수요기관",
-            "예정가격":       "예산가격",
-            "1순위투찰금액":  "투찰금액",
-            "개찰일":         "투찰일자",
-            "업종":           "면허업종제한목록",
-            "지역":           "수요기관지역",      # 지역 컬럼 직접 사용
-            "업체수":         "입찰참여자수",       # 실제 참여 업체수
+            "공고번호":           "입찰공고번호",
+            "발주기관":           "수요기관",
+            "예정가격":           "예산가격",
+            "1순위투찰금액":      "투찰금액",
+            "개찰일":             "투찰일자",
+            "업종":               "면허업종제한목록",
+            "지역":               "수요기관지역",
+            "업체수":             "입찰참여자수",
+            "1순위사정율(100%)":  "1순위사정율",    # 신포맷 컬럼명
+            "G2B물품분류":        "g2b분류",        # 신포맷 컬럼명
         })
         # 요약 포맷에서 없는 컬럼 기본값으로 채우기
         df["개찰순위"]              = "1"
@@ -227,6 +229,8 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             # ── g2b_code ─────────────────────────────────────────────────
             raw_g2b = row.get("g2b분류", None)
             g2b_code = str(raw_g2b).strip() if raw_g2b and str(raw_g2b).strip() not in ("", "nan") else None
+            if g2b_code and len(g2b_code) > 50:
+                g2b_code = g2b_code[:50]
 
             records.append({
                 "project_id":       str(row["입찰공고번호"]).strip(),
@@ -265,12 +269,20 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
     print(f"2. DB 적재 중... ({len(df)}건, upsert={upsert})")
     inserted = 0
     updated  = 0
+    seen_in_batch: set[str] = set()  # 파일 내 중복 project_id 방지
 
     async with AsyncSessionLocal() as session:
         for _, row in df.iterrows():
-            existing = await session.scalar(
-                select(BidsHistory).where(BidsHistory.project_id == row["project_id"])
-            )
+            pid = row["project_id"]
+            if pid in seen_in_batch:
+                updated += 1  # 파일 내 중복 → 스킵
+                continue
+            seen_in_batch.add(pid)
+
+            with session.no_autoflush:
+                existing = await session.scalar(
+                    select(BidsHistory).where(BidsHistory.project_id == pid)
+                )
             if existing:
                 if upsert:
                     existing.client_name      = row["client_name"]
