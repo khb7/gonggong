@@ -32,7 +32,8 @@
       "Bash(python3:*)",
       "Bash(mv:*)",
       "Bash(alembic revision:*)",
-      "Bash(rtk pytest:*)"
+      "Bash(rtk pytest:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)"
     ]
   }
 }
