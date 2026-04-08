@@ -8,6 +8,7 @@ app/data/fallback.py
 모든 쿼리는 bid_type='적격심사' 필터가 기본 적용된다.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,7 @@ async def get_rates_with_fallback(
     bucket_id: int,
     bid_type: str = TARGET_BID_TYPE,
     client_id: str | None = None,
+    before_date: date | None = None,
 ) -> tuple[list[Decimal], str]:
     """
     Fallback 우선순위에 따라 사정률 리스트와 사용된 레벨을 반환한다.
@@ -56,6 +58,7 @@ async def get_rates_with_fallback(
         bucket_id: 금액 버킷 ID
         bid_type: 입찰방식 필터 (기본: "적격심사")
         client_id: 발주청 코드 (있으면 이름보다 우선)
+        before_date: 이 날짜 이전 데이터만 조회 (None이면 전체)
 
     Returns:
         (rates, fallback_level) 튜플
@@ -63,23 +66,33 @@ async def get_rates_with_fallback(
 
     # 1. 발주처
     rates = await get_rates_by_client(
-        db, client_name, project_type, bucket_id, bid_type, client_id
+        db, client_name, project_type, bucket_id, bid_type, client_id,
+        before_date=before_date,
     )
     if len(rates) >= MIN_SAMPLE_SIZE:
         return rates, LEVEL_CLIENT
 
     # 2. 지역
-    rates = await get_rates_by_region(db, region, project_type, bucket_id, bid_type)
+    rates = await get_rates_by_region(
+        db, region, project_type, bucket_id, bid_type,
+        before_date=before_date,
+    )
     if len(rates) >= MIN_SAMPLE_SIZE:
         return rates, LEVEL_REGION
 
     # 3. 공종 + 버킷
-    rates = await get_rates_by_type_and_bucket(db, project_type, bucket_id, bid_type)
+    rates = await get_rates_by_type_and_bucket(
+        db, project_type, bucket_id, bid_type,
+        before_date=before_date,
+    )
     if len(rates) >= MIN_SAMPLE_SIZE:
         return rates, LEVEL_BUCKET
 
     # 4. 전체 (최후 수단)
-    rates = await get_all_rates(db, project_type, bid_type)
+    rates = await get_all_rates(
+        db, project_type, bid_type,
+        before_date=before_date,
+    )
     if len(rates) >= MIN_SAMPLE_SIZE:
         return rates, LEVEL_GLOBAL
 
