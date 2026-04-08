@@ -63,23 +63,29 @@ async def get_rates_by_client(
     bucket_id: int,
     bid_type: str = TARGET_BID_TYPE,
     client_id: str | None = None,
+    before_date: date | None = None,
 ) -> list[Decimal]:
     """
     발주처 + 공종 + 버킷 기준 사정률 리스트 반환.
     client_id가 있으면 코드 우선, 없으면 client_name으로 매칭.
+    before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     if client_id:
         client_filter = BidsHistory.client_id == client_id
     else:
         client_filter = BidsHistory.client_name == client_name
 
+    conditions = [
+        client_filter,
+        BidsHistory.project_type == project_type,
+        _bucket_filter(bucket_id),
+        _bid_type_filter(bid_type),
+    ]
+    if before_date is not None:
+        conditions.append(BidsHistory.bid_date < before_date)
+
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(
-            client_filter,
-            BidsHistory.project_type == project_type,
-            _bucket_filter(bucket_id),
-            _bid_type_filter(bid_type),
-        )
+        select(BidsHistory.adjustment_rate).where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -90,18 +96,24 @@ async def get_rates_by_region(
     project_type: str,
     bucket_id: int,
     bid_type: str = TARGET_BID_TYPE,
+    before_date: date | None = None,
 ) -> list[Decimal]:
     """지역 + 공종 + 버킷 기준 사정률 리스트 반환.
     region 값이 '전국,경기' 처럼 복합값일 수 있으므로 LIKE 매칭 사용.
     예: region='경기' → '경기', '전국,경기', '인천,경기' 모두 포함.
+    before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
+    conditions = [
+        BidsHistory.region.like(f"%{region}%"),
+        BidsHistory.project_type == project_type,
+        _bucket_filter(bucket_id),
+        _bid_type_filter(bid_type),
+    ]
+    if before_date is not None:
+        conditions.append(BidsHistory.bid_date < before_date)
+
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(
-            BidsHistory.region.like(f"%{region}%"),
-            BidsHistory.project_type == project_type,
-            _bucket_filter(bucket_id),
-            _bid_type_filter(bid_type),
-        )
+        select(BidsHistory.adjustment_rate).where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -111,14 +123,21 @@ async def get_rates_by_type_and_bucket(
     project_type: str,
     bucket_id: int,
     bid_type: str = TARGET_BID_TYPE,
+    before_date: date | None = None,
 ) -> list[Decimal]:
-    """공종 + 버킷 기준 사정률 리스트 반환."""
+    """공종 + 버킷 기준 사정률 리스트 반환.
+    before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
+    """
+    conditions = [
+        BidsHistory.project_type == project_type,
+        _bucket_filter(bucket_id),
+        _bid_type_filter(bid_type),
+    ]
+    if before_date is not None:
+        conditions.append(BidsHistory.bid_date < before_date)
+
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(
-            BidsHistory.project_type == project_type,
-            _bucket_filter(bucket_id),
-            _bid_type_filter(bid_type),
-        )
+        select(BidsHistory.adjustment_rate).where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -127,12 +146,19 @@ async def get_all_rates(
     db: AsyncSession,
     project_type: str,
     bid_type: str = TARGET_BID_TYPE,
+    before_date: date | None = None,
 ) -> list[Decimal]:
-    """공종 전체 사정률 리스트 반환 (최후 Fallback, 버킷 구분 없음)."""
+    """공종 전체 사정률 리스트 반환 (최후 Fallback, 버킷 구분 없음).
+    before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
+    """
+    conditions = [
+        BidsHistory.project_type == project_type,
+        _bid_type_filter(bid_type),
+    ]
+    if before_date is not None:
+        conditions.append(BidsHistory.bid_date < before_date)
+
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(
-            BidsHistory.project_type == project_type,
-            _bid_type_filter(bid_type),
-        )
+        select(BidsHistory.adjustment_rate).where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
