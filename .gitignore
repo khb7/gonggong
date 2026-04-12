@@ -11,3 +11,5 @@ scratch/
 logs/
 *.key
 *.pem
+githubtocken.txt
+ssh-key-2026-04-12.key.pub
