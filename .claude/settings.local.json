@@ -33,7 +33,14 @@
       "Bash(mv:*)",
       "Bash(alembic revision:*)",
       "Bash(rtk pytest:*)",
-      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+      "Bash(PYTHONIOENCODING=utf-8 python:*)",
+      "Read(//c/Users/onebe/gonggong//**)",
+      "Read(//c/Users/onebe/gonggong/scripts//**)",
+      "Bash(playwright install:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(pytest --tb=short -q)",
+      "Bash(mv C:/Users/onebe/gonggong/tests/test_direct.py C:/Users/onebe/gonggong/scripts/_test_direct.py)",
+      "Bash(mv C:/Users/onebe/gonggong/tests/test_router.py C:/Users/onebe/gonggong/scripts/_test_router.py)"
     ]
   }
 }

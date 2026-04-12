@@ -9,3 +9,5 @@ build/
 venv/
 scratch/
 logs/
+*.key
+*.pem
