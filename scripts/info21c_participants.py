@@ -149,13 +149,23 @@ async def go_next_page(page) -> bool:
 # ── 다운로드 ──────────────────────────────────────────────────────────────────
 
 async def wait_for_new_file(since: float, timeout: int = 60) -> Path | None:
-    """DOWNLOAD_DIR 에서 since 이후 생성된 xls/xlsx 반환."""
+    """DOWNLOAD_DIR 에서 since 이후 생성된 xls/xlsx 반환. 파일이 완전히 쓰여질 때까지 대기."""
+    import xlrd
     deadline = time.time() + timeout
     while time.time() < deadline:
         await asyncio.sleep(0.5)
         for f in list(DOWNLOAD_DIR.glob("*.xls")) + list(DOWNLOAD_DIR.glob("*.xlsx")):
-            if not f.name.endswith(".crdownload") and f.stat().st_mtime >= since:
+            if f.name.endswith(".crdownload"):
+                continue
+            if f.stat().st_mtime < since:
+                continue
+            # 파일이 완전히 쓰여졌는지 xlrd로 검증 (ignore_workbook_corruption=True 필수)
+            try:
+                xlrd.open_workbook(str(f), ignore_workbook_corruption=True)
                 return f
+            except Exception:
+                # 아직 쓰는 중이거나 손상 — 계속 대기
+                continue
     return None
 
 
@@ -341,7 +351,16 @@ async def run(type_name: str, start_ym: str, end_ym: str) -> None:
                     await page.wait_for_timeout(500)
                 except Exception:
                     break
-            return await page.locator("#config_from_date").count() > 0
+
+            # 자동으로 못 찾으면 사용자가 직접 이동할 때까지 대기
+            if await page.locator("#config_from_date").count() == 0:
+                print("\n⚠ 날짜 설정 페이지를 찾을 수 없습니다.")
+                print("  브라우저에서 Info21c 낙찰결과 검색 목록 페이지로 직접 이동해 주세요.")
+                print("  (페이지 이동 후 자동으로 계속됩니다...)")
+                while await page.locator("#config_from_date").count() == 0:
+                    await asyncio.sleep(2)
+                print("  → 페이지 감지됨. 계속합니다.")
+            return True
 
         # 시작 전 목록 페이지 확인
         ok = await ensure_list_page()
