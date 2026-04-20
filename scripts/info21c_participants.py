@@ -149,23 +149,15 @@ async def go_next_page(page) -> bool:
 # ── 다운로드 ──────────────────────────────────────────────────────────────────
 
 async def wait_for_new_file(since: float, timeout: int = 60) -> Path | None:
-    """DOWNLOAD_DIR 에서 since 이후 생성된 xls/xlsx 반환. 파일이 완전히 쓰여질 때까지 대기."""
-    import xlrd
+    """DOWNLOAD_DIR 에서 since 이후 생성된 xls/xlsx 반환."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         await asyncio.sleep(0.5)
         for f in list(DOWNLOAD_DIR.glob("*.xls")) + list(DOWNLOAD_DIR.glob("*.xlsx")):
             if f.name.endswith(".crdownload"):
                 continue
-            if f.stat().st_mtime < since:
-                continue
-            # 파일이 완전히 쓰여졌는지 xlrd로 검증 (ignore_workbook_corruption=True 필수)
-            try:
-                xlrd.open_workbook(str(f), ignore_workbook_corruption=True)
+            if f.stat().st_mtime >= since:
                 return f
-            except Exception:
-                # 아직 쓰는 중이거나 손상 — 계속 대기
-                continue
     return None
 
 
