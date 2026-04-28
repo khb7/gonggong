@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidsHistory, ClientStatistics
+from app.db.models import BidsHistory, BidLicenseType, ClientStatistics
 
 # Fallback 최소 샘플 수
 MIN_SAMPLE_SIZE = 20
@@ -77,7 +77,7 @@ async def get_rates_by_client(
 
     conditions = [
         client_filter,
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
     ]
@@ -85,7 +85,9 @@ async def get_rates_by_client(
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -105,7 +107,7 @@ async def get_rates_by_region(
     """
     conditions = [
         BidsHistory.region.like(f"%{region}%"),
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
     ]
@@ -113,7 +115,9 @@ async def get_rates_by_region(
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -129,7 +133,7 @@ async def get_rates_by_type_and_bucket(
     before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     conditions = [
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
     ]
@@ -137,7 +141,9 @@ async def get_rates_by_type_and_bucket(
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -152,13 +158,15 @@ async def get_all_rates(
     before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     conditions = [
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bid_type_filter(bid_type),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]

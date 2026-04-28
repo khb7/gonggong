@@ -63,10 +63,11 @@ async def has_data_in_db(org_keyword: str, license_type: str, start_date: str, e
 
     async with AsyncSessionLocal() as db:
         r = await db.scalar(text("""
-            SELECT COUNT(*) FROM bids_history
-            WHERE client_name LIKE :kw
-              AND project_type = :pt
-              AND bid_date BETWEEN :sd AND :ed
+            SELECT COUNT(*) FROM bids_history h
+            JOIN bid_license_types l ON l.project_id = h.project_id
+            WHERE h.client_name LIKE :kw
+              AND l.type_name = :pt
+              AND h.bid_date BETWEEN :sd AND :ed
         """), {"kw": f"%{org_keyword}%", "pt": project_type, "sd": start_dt, "ed": end_dt})
     return (r or 0) > 0
 

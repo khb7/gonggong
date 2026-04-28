@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidsHistory, BidParticipants
+from app.db.models import BidsHistory, BidLicenseType, BidParticipants
 
 
 async def upsert_bids_history(
@@ -25,12 +25,11 @@ async def upsert_bids_history(
     if not records:
         return 0, 0
 
-    values = [
+    bid_values = [
         {
             "project_id": r.project_id,
             "client_name": r.client_name,
             "region": r.region,
-            "project_type": r.project_type,
             "base_price": r.base_price,
             "lower_limit_rate": r.lower_limit_rate,
             "adjustment_rate": r.adjustment_rate,
@@ -44,9 +43,27 @@ async def upsert_bids_history(
         for r in records
     ]
 
-    stmt = pg_insert(BidsHistory).values(values)
+    stmt = pg_insert(BidsHistory).values(bid_values)
     stmt = stmt.on_conflict_do_nothing(index_elements=["project_id"])
     result = await db.execute(stmt)
+
+    # G2B 수집 레코드는 project_type 단일 문자열 → BidLicenseType 1건 생성
+    license_values = [
+        {
+            "project_id": r.project_id,
+            "type_name": r.project_type,
+            "size": None,
+            "is_mutual": False,
+            "is_primary": True,
+        }
+        for r in records
+        if getattr(r, "project_type", None)
+    ]
+    if license_values:
+        lt_stmt = pg_insert(BidLicenseType).values(license_values)
+        lt_stmt = lt_stmt.on_conflict_do_nothing(index_elements=["project_id", "type_name"])
+        await db.execute(lt_stmt)
+
     await db.commit()
 
     inserted = result.rowcount

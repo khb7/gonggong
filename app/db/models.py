@@ -29,7 +29,6 @@ class BidsHistory(Base):
     project_id: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True, comment="나라장터 공고 번호")
     client_name: Mapped[str] = mapped_column(String(100), nullable=True, index=True, comment="발주처명")
     region: Mapped[str] = mapped_column(String(50), nullable=False, comment="지역")
-    project_type: Mapped[str] = mapped_column(String(50), nullable=False, comment="공종 (실내건축/조경 등)")
 
     base_price: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="기초금액 (원)")
     lower_limit_rate: Mapped[Decimal] = mapped_column(
@@ -62,6 +61,43 @@ class BidsHistory(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class BidLicenseType(Base):
+    """
+    입찰 공고별 면허 업종 목록.
+
+    bids_history의 project_type 단일 컬럼을 대체.
+    하나의 공고는 여러 면허 업종을 동시에 요구할 수 있으며
+    각 업종의 규모(대/소), 상호허용 여부, 주력 여부를 함께 저장한다.
+
+    예) '건축,토건,실내건축[대](상호허용)' →
+        {type_name: '건축',     size: None, is_mutual: False, is_primary: False}
+        {type_name: '토건',     size: None, is_mutual: False, is_primary: False}
+        {type_name: '실내건축', size: '대',  is_mutual: True,  is_primary: False}
+    """
+
+    __tablename__ = "bid_license_types"
+    __table_args__ = (
+        UniqueConstraint("project_id", "type_name", name="uq_bid_license_project_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="나라장터 공고 번호"
+    )
+    type_name: Mapped[str] = mapped_column(
+        String(100), nullable=False, index=True, comment="공종명 (예: 실내건축, 건축, 토건)"
+    )
+    size: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, comment="면허 규모: 대 / 소 / None"
+    )
+    is_mutual: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="상호허용 여부"
+    )
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="주력 공종 여부 (주력: 태그)"
     )
 
 
