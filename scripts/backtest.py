@@ -27,9 +27,9 @@ from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.db.models import BidsHistory, ProjectBucket
+from app.db.models import BidsHistory, BidLicenseType, ProjectBucket
 from app.db.session import AsyncSessionLocal
 from app.data.fallback import get_rates_with_fallback
 from app.engine.statistics import trimmed_median, mad
@@ -43,13 +43,35 @@ async def run_backtest(since: date) -> list[dict]:
     results = []
 
     async with AsyncSessionLocal() as db:
+        # 각 공고의 "대표 공종": 비상호허용(is_mutual=False) 중 첫 번째, 없으면 전체 중 첫 번째
+        primary_type_sq = (
+            select(BidLicenseType.type_name)
+            .where(BidLicenseType.project_id == BidsHistory.project_id)
+            .where(BidLicenseType.is_mutual == False)
+            .order_by(BidLicenseType.id)
+            .limit(1)
+            .correlate(BidsHistory)
+            .scalar_subquery()
+        )
+        fallback_type_sq = (
+            select(BidLicenseType.type_name)
+            .where(BidLicenseType.project_id == BidsHistory.project_id)
+            .order_by(BidLicenseType.id)
+            .limit(1)
+            .correlate(BidsHistory)
+            .scalar_subquery()
+        )
+
         rows = (await db.execute(
-            select(BidsHistory).where(
+            select(
+                BidsHistory,
+                func.coalesce(primary_type_sq, fallback_type_sq).label("primary_type"),
+            ).where(
                 BidsHistory.bid_date >= since,
                 BidsHistory.bid_type == "적격심사",
                 BidsHistory.bid_date.isnot(None),
             ).order_by(BidsHistory.bid_date)
-        )).scalars().all()
+        )).all()
 
         print(f"검증셋: {len(rows)}건 (since={since})")
 
@@ -57,15 +79,20 @@ async def run_backtest(since: date) -> list[dict]:
             if i % 500 == 0:
                 print(f"  처리 중... {i}/{len(rows)}")
 
-            bucket_id = ProjectBucket.get_bucket_id(row.base_price)
+            bid = row.BidsHistory
+            primary_type = row.primary_type
+            if not primary_type:
+                continue
+
+            bucket_id = ProjectBucket.get_bucket_id(bid.base_price)
 
             rates, fallback_level = await get_rates_with_fallback(
                 db=db,
-                client_name=row.client_name or "",
-                region=row.region or "",
-                project_type=row.project_type,
+                client_name=bid.client_name or "",
+                region=bid.region or "",
+                project_type=primary_type,
                 bucket_id=bucket_id,
-                client_id=row.client_id,
+                client_id=bid.client_id,
                 before_date=since,
             )
 
@@ -76,25 +103,25 @@ async def run_backtest(since: date) -> list[dict]:
             mad_val = mad(rates)
 
             calc = calculate_single(
-                base_price=row.base_price,
-                lower_limit_rate=row.lower_limit_rate,
+                base_price=bid.base_price,
+                lower_limit_rate=bid.lower_limit_rate,
                 predicted_rate=predicted_rate,
                 offset=Decimal("0"),
             )
             bid_price = calc["price_krw"]
 
-            actual_rate = float(row.adjustment_rate)
-            est_price = int(row.base_price * actual_rate)
-            lower_bound = int(est_price * float(row.lower_limit_rate))
+            actual_rate = float(bid.adjustment_rate)
+            est_price = int(bid.base_price * actual_rate)
+            lower_bound = int(est_price * float(bid.lower_limit_rate))
             in_range = lower_bound <= bid_price <= est_price
 
             rate_error = abs(float(predicted_rate) - actual_rate)
 
             results.append({
-                "project_id":     row.project_id,
-                "client_name":    row.client_name or "",
-                "project_type":   row.project_type,
-                "base_price":     row.base_price,
+                "project_id":     bid.project_id,
+                "client_name":    bid.client_name or "",
+                "project_type":   primary_type,
+                "base_price":     bid.base_price,
                 "actual_rate":    round(actual_rate, 6),
                 "predicted_rate": round(float(predicted_rate), 6),
                 "rate_error":     round(rate_error, 6),
@@ -104,7 +131,7 @@ async def run_backtest(since: date) -> list[dict]:
                 "lower_bound":    lower_bound,
                 "in_range":       in_range,
                 "fallback_level": fallback_level,
-                "bid_date":       str(row.bid_date),
+                "bid_date":       str(bid.bid_date),
             })
 
     return results
