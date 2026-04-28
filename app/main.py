@@ -4,10 +4,12 @@ FastAPI 앱 진입점
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.bidding import router as bidding_router
@@ -53,3 +55,16 @@ async def admin_redirect():
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+# 정적 파일 서빙 (프론트엔드 빌드 결과물)
+DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+if DIST_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        file_path = DIST_DIR / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(DIST_DIR / "index.html")
