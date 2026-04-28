@@ -44,8 +44,11 @@ def normalize_region(raw: str) -> str:
 def normalize_project_type(raw: str) -> str | None:
     """
     '건축,토건', '조경(식재.시설물)[대](주력:조경식재)' 등 Info21c 업종 컬럼 값
-    → '건축' / '조경'
+    → '실내건축' / '조경'
     복합 공종('|' 구분) 또는 매핑 없는 코드 → None (필터링)
+
+    건축공사업(0002) 데이터는 실내건축 예측에 사용하므로 '실내건축'으로 통일.
+    (app/db/normalize.py의 VALID_PROJECT_TYPES 기준: {'실내건축', '조경'})
     """
     if not raw or pd.isna(raw):
         return None
@@ -55,7 +58,7 @@ def normalize_project_type(raw: str) -> str | None:
     if "조경" in raw:
         return "조경"
     if "건축" in raw or "토건" in raw:
-        return "건축"
+        return "실내건축"
     return None
 
 

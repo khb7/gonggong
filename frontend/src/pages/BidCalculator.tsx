@@ -5,8 +5,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronDown, ChevronUp, ClipboardPaste } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+function parseInfo21cText(text: string) {
+  const result: Record<string, string> = {};
+
+  const basePrice = text.match(/기초금액\s+([\d,]+)\s*원/);
+  if (basePrice) result.base_price = basePrice[1].replace(/,/g, "");
+
+  const lowerLimit = text.match(/낙찰하한율\s+([\d.]+)%/);
+  if (lowerLimit) result.lower_limit_rate = String(Number(lowerLimit[1]) / 100);
+
+  const client = text.match(/발주기관\s+(\S+)/);
+  if (client) result.client_name = client[1];
+
+  const region = text.match(/지역\s+(\S+)/);
+  if (region) result.region = region[1];
+
+  if (/실내건축/.test(text)) result.project_type = "실내건축";
+  else if (/조경/.test(text)) result.project_type = "조경";
+
+  const noticeId = text.match(/공고번호\s+(\S+)/);
+  if (noticeId) result.bid_notice_id = noticeId[1];
+
+  return result;
+}
 
 const FALLBACK_BADGES: Record<string, { label: string; className: string }> = {
   client: { label: "발주처 이력", className: "bg-success text-success-foreground" },
@@ -54,17 +78,40 @@ export default function BidCalculator() {
   const [participants, setParticipants] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BidResult | null>(null);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [parsedFields, setParsedFields] = useState<string[]>([]);
   const { toast } = useToast();
+
+  const handlePaste = (text: string) => {
+    setPasteText(text);
+    if (!text.trim()) {
+      setParsedFields([]);
+      return;
+    }
+    const parsed = parseInfo21cText(text);
+    const filled: string[] = [];
+    if (parsed.bid_notice_id) { setBidNoticeId(parsed.bid_notice_id); filled.push("공고번호"); }
+    if (parsed.client_name)   { setClientName(parsed.client_name);   filled.push("발주기관"); }
+    if (parsed.region)        { setRegion(parsed.region);             filled.push("지역"); }
+    if (parsed.project_type)  { setProjectType(parsed.project_type); filled.push("공종"); }
+    if (parsed.base_price)    { setBasePrice(parsed.base_price);     filled.push("기초금액"); }
+    if (parsed.lower_limit_rate) { setLowerLimitRate(parsed.lower_limit_rate); filled.push("낙찰하한율"); }
+    setParsedFields(filled);
+  };
 
   const handleCalculate = async () => {
     if (!bidNoticeId.trim()) return;
     setLoading(true);
     setResult(null);
     try {
-      const overrides: Record<string, number | null> = {
+      const overrides: Record<string, number | string | null> = {
         base_price: basePrice ? Number(basePrice) : null,
         lower_limit_rate: lowerLimitRate ? Number(lowerLimitRate) : null,
         participants: participants ? Number(participants) : null,
+        client_name: clientName || null,
+        region: region || null,
+        project_type: projectType || null,
       };
       const data = await calculateBid(bidNoticeId.trim(), overrides);
       setResult(data);
@@ -88,6 +135,41 @@ export default function BidCalculator() {
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <h2 className="text-2xl font-bold">투찰가 계산</h2>
+
+      {/* 붙여넣기 파싱 영역 */}
+      <div className="border rounded-lg overflow-hidden">
+        <button
+          className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors"
+          onClick={() => setPasteOpen((v) => !v)}
+        >
+          <span className="flex items-center gap-2">
+            <ClipboardPaste className="w-4 h-4" />
+            info21c 공고 텍스트 붙여넣기
+          </span>
+          {pasteOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+        {pasteOpen && (
+          <div className="p-4 border-t space-y-3">
+            <textarea
+              className="w-full h-36 text-xs p-3 rounded border bg-muted/30 resize-none focus:outline-none focus:ring-1 focus:ring-ring font-mono"
+              placeholder="info21c 공고 상세 페이지에서 Ctrl+A → Ctrl+C 후 여기에 붙여넣으세요."
+              value={pasteText}
+              onChange={(e) => handlePaste(e.target.value)}
+            />
+            {parsedFields.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                <span>자동 입력됨:</span>
+                {parsedFields.map((f) => (
+                  <Badge key={f} variant="secondary" className="text-xs">{f}</Badge>
+                ))}
+              </div>
+            )}
+            {pasteText.trim() && parsedFields.length === 0 && (
+              <p className="text-xs text-destructive">인식된 필드가 없습니다. info21c 공고 텍스트가 맞는지 확인하세요.</p>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="space-y-4">
         {/* 공고 번호 */}

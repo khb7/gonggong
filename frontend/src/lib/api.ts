@@ -1,4 +1,4 @@
-const BASE_URL = "http://localhost:8000";
+const BASE_URL = import.meta.env.VITE_API_URL ?? "";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${url}`, {
@@ -87,12 +87,15 @@ export interface BackfillStatus {
 }
 
 // API functions
-export function calculateBid(bid_notice_id: string, overrides?: Record<string, number | null>) {
+export function calculateBid(
+  bid_notice_id: string,
+  overrides?: Record<string, number | string | null>,
+) {
   const body: any = { bid_notice_id };
   if (overrides) {
-    const clean: Record<string, number> = {};
+    const clean: Record<string, number | string> = {};
     for (const [k, v] of Object.entries(overrides)) {
-      if (v != null) clean[k] = v;
+      if (v != null && v !== "") clean[k] = v;
     }
     if (Object.keys(clean).length > 0) body.overrides = clean;
   }
