@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BidsHistory, BidLicenseType, BidParticipants
+from app.engine import distribution_cache
 
 
 async def upsert_bids_history(
@@ -65,6 +66,7 @@ async def upsert_bids_history(
         await db.execute(lt_stmt)
 
     await db.commit()
+    distribution_cache.invalidate()
 
     inserted = result.rowcount
     skipped = len(records) - inserted
@@ -94,6 +96,7 @@ async def upsert_bid_participants(
     )
     result = await db.execute(stmt)
     await db.commit()
+    distribution_cache.invalidate()
 
     inserted = result.rowcount
     skipped = len(records) - inserted
