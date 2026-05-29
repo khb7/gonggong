@@ -111,8 +111,8 @@ async def set_search_filters(
     start_date/end_date: YYYYMMDD 형식
     license_type: '0002' 또는 '0023'
     """
-    # 공종 코드 → Info21c select value 매핑
-    LICENSE_CODE_MAP = {"0002": "C081", "0023": "C084"}  # C081=실내건축[대], C084=조경[대]
+    # 공종 코드 → Info21c 체크박스 value 매핑
+    LICENSE_CODE_MAP = {"0002": "C002", "0023": "C084"}  # C002=실내건축, C084=조경
 
     print(f"[2/4] 검색 조건 설정 중... (기간: {start_date}~{end_date}, 공종: {license_type})")
 
@@ -125,43 +125,42 @@ async def set_search_filters(
 
     await page.evaluate(
         "(args) => { "
-        "  document.querySelector('#config_from_date').value = args[0]; "
-        "  document.querySelector('#config_to_date').value   = args[1]; "
+        "  document.querySelector('[name=config_from_date]').value = args[0]; "
+        "  document.querySelector('[name=config_to_date]').value   = args[1]; "
         "}",
         [fmt_start, fmt_end]
     )
     await page.wait_for_timeout(300)
 
-    actual_start = await page.input_value("#config_from_date")
-    actual_end   = await page.input_value("#config_to_date")
+    actual_start = await page.input_value("[name=config_from_date]")
+    actual_end   = await page.input_value("[name=config_to_date]")
     print(f"  → 날짜 설정: {actual_start} ~ {actual_end}")
 
-    # ── 공종 선택 (#search_code1 셀렉트박스) ──────────────────────────────────
-    # select_option()은 hidden 요소에 timeout됨 → JS 직접 주입 방식 사용
-    code_val = LICENSE_CODE_MAP.get(license_type, "C081")
+    # ── 공종 선택 (itemcode 체크박스) ─────────────────────────────────────────
+    # 전체 해제 후 해당 공종 하나만 체크
+    code_val = LICENSE_CODE_MAP.get(license_type, "C002")
     await page.evaluate(
         "(val) => { "
-        "  var el = document.querySelector('#search_code1'); "
-        "  el.value = val; "
-        "  el.dispatchEvent(new Event('change', {bubbles: true})); "
+        "  document.querySelectorAll('input[name=itemcode]').forEach(cb => { cb.checked = false; }); "
+        "  var target = document.querySelector('input[name=itemcode][value=\"' + val + '\"]'); "
+        "  if (target) { target.checked = true; target.dispatchEvent(new Event('change', {bubbles: true})); } "
         "}",
         code_val
     )
     await page.wait_for_timeout(300)
     print(f"  → 공종 선택: {code_val} ({LICENSE_TYPES.get(license_type)})")
 
-    # ── 조회 버튼 (#topSearchBtn) ─────────────────────────────────────────────
-    await page.click("#topSearchBtn")
+    # ── 조회 버튼 (#config_search_btn) ───────────────────────────────────────
+    await page.click("#config_search_btn")
 
     # 결과 테이블 행이 실제로 로드될 때까지 대기 (AJAX 응답 완료 확인)
     try:
-        await page.wait_for_selector("table tbody tr[data-key]", timeout=TIMEOUT)
+        await page.wait_for_selector("a.list_link", timeout=TIMEOUT)
     except PWTimeout:
-        print("  ⚠ 결과 로딩 타임아웃. 결과가 없거나 느린 응답입니다.")
+        print("  [!] 결과 로딩 타임아웃. 결과가 없거나 느린 응답입니다.")
         return
 
     # ── 페이지 크기를 100으로 변경 (기본 15 → 100) ───────────────────────────
-    # name='pageSize' select 가 있으면 100으로 설정 후 결과 재로드 대기
     changed = await page.evaluate("""
         () => {
             var sel = document.querySelector('select[name=pageSize]');
@@ -172,9 +171,9 @@ async def set_search_filters(
         }
     """)
     if changed:
-        await page.wait_for_timeout(1500)  # AJAX 재로드 대기
+        await page.wait_for_timeout(1500)
 
-    row_count = await page.locator("table tbody tr[data-key]").count()
+    row_count = await page.locator("a.list_link").count()
     print(f"  → 검색 완료 ({row_count}건 로드됨)")
 
     if debug:
@@ -193,10 +192,10 @@ async def export_csv(page, download_dir: Path, license_type: str, start_date: st
 
     # ── 엑셀 버튼 클릭 + 다운로드 대기 ──────────────────────────────────────
     # expect_download는 반드시 클릭 이전에 열어야 다운로드 이벤트를 놓치지 않음
-    await page.wait_for_selector("span[name='excelSaveBtn']", timeout=TIMEOUT)
+    await page.wait_for_selector("button[name='list_excel_btn']", timeout=TIMEOUT)
 
     async with page.expect_download(timeout=60_000) as dl_info:
-        await page.click("span[name='excelSaveBtn']")
+        await page.click("button[name='list_excel_btn']")
 
         # 클릭 후 모달이 열리는 경우 → 모달 내 확인 버튼 클릭
         await page.wait_for_timeout(1500)
