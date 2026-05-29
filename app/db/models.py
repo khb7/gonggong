@@ -138,6 +138,33 @@ class BidParticipants(Base):
     )
 
 
+class BidPreliminaryPrice(Base):
+    """
+    복수예비가격 15개 데이터.
+
+    개찰 후 공개되는 15개 예비가격과 추첨 선택 여부를 저장한다.
+    2개가 추첨(is_selected=True)되어 평균 → 예정가격 결정.
+    """
+
+    __tablename__ = "bid_preliminary_prices"
+    __table_args__ = (
+        UniqueConstraint("project_id", "num", name="uq_bid_prelim_project_num"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="나라장터 공고 번호"
+    )
+    num: Mapped[int] = mapped_column(Integer, nullable=False, comment="예비가격 번호 (1~15)")
+    price: Mapped[int] = mapped_column(BigInteger, nullable=False, comment="예비가격 금액 (원)")
+    base_pct: Mapped[Decimal] = mapped_column(
+        Numeric(10, 4), nullable=False, comment="기초금액 대비 편차 % (예: -1.9589)"
+    )
+    is_selected: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, comment="추첨 선택 여부"
+    )
+
+
 class ClientStatistics(Base):
     """
     발주처별 사정률 통계 캐시.

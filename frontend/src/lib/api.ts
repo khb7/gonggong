@@ -138,3 +138,51 @@ export function startBackfill(start_date: string, end_date: string) {
     body: JSON.stringify({ start_date, end_date }),
   });
 }
+
+// ── Distribution Engine ───────────────────────────────────────────────────
+
+export interface OffsetBucket {
+  offset_pct: number;
+  count: number;
+  win_count: number;
+  historical_win_rate: number | null;
+}
+
+export interface BidPosition {
+  offset_pct: number;
+  estimated_price: number;
+  percentile: number;
+  historical_win_rate: number;
+  sample_count: number;
+}
+
+export interface DistributionResult {
+  bid_notice_id: string;
+  base_price: number;
+  lower_limit_rate: number;
+  estimated_participants: number;
+  g2b_fetch_status: string;
+  distribution: OffsetBucket[];
+  data_quality: { total_bids: number };
+  my_position: BidPosition | null;
+}
+
+export function getBidDistribution(
+  bid_notice_id: string,
+  overrides?: Record<string, number | string | null>,
+  my_bid_price?: number | null,
+) {
+  const body: Record<string, unknown> = { bid_notice_id };
+  if (overrides) {
+    const clean: Record<string, number | string> = {};
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v != null && v !== "") clean[k] = v;
+    }
+    if (Object.keys(clean).length > 0) body.overrides = clean;
+  }
+  if (my_bid_price != null) body.my_bid_price = my_bid_price;
+  return request<DistributionResult>("/api/v1/bid/distribution", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

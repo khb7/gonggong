@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
 import BidCalculator from "@/pages/BidCalculator";
+import BidDistribution from "@/pages/BidDistribution";
 import DataOverview from "@/pages/DataOverview";
 import ClientStatistics from "@/pages/ClientStatistics";
 import RateDistribution from "@/pages/RateDistribution";
@@ -20,6 +21,7 @@ const App = () => (
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={<BidCalculator />} />
+            <Route path="/bid-distribution" element={<BidDistribution />} />
             <Route path="/overview" element={<DataOverview />} />
             <Route path="/clients" element={<ClientStatistics />} />
             <Route path="/distribution" element={<RateDistribution />} />

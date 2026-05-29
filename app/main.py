@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.bidding import router as bidding_router
+from app.api.v1.distribution import router as distribution_router
 from app.api.v1.stats import router as stats_router
 from app.jobs.scheduler import scheduler, setup_scheduler
 
@@ -44,6 +45,7 @@ app.add_middleware(
 
 app.include_router(admin_router, prefix="/api/v1", tags=["admin"])
 app.include_router(bidding_router, prefix="/api/v1", tags=["bidding"])
+app.include_router(distribution_router, prefix="/api/v1", tags=["distribution"])
 app.include_router(stats_router, prefix="/api/v1", tags=["stats"])
 
 
