@@ -1,260 +1,187 @@
 """
-Info21c participants_*.xls → bids_history DB 적재 스크립트.
+data/participants/ 의 Excel 파일들을 bid_participants DB에 일괄 적재.
 
-파일 형식: 공고명 레이아웃 (공고별 1파일)
-  행 0: 공고명
-  행 1: 업종(col2) / 지역(col8)
-  행 2: 공고번호(col2) / 발주기관(col8)
-  행 3: 개찰일시(col2) / 낙찰금액(col8)
-  행 4: 기초금액(col2) / 낙찰하한율(col8)
-  행 5: 예산금액(col2) / 예가/기초(col8) ← 사정률
-  행 6: 낙찰자선정가(col2) / 투찰/기초(col8)
-  행15: 참여업체수 헤더 텍스트
+Excel 파일에서 G2B 공고번호를 직접 추출하므로 상세 페이지 재방문 불필요.
 
 사용법:
   python scripts/etl_participants.py
-  python scripts/etl_participants.py --dir "G:/내 드라이브/gonggong/participants"
-  python scripts/etl_participants.py --resume   # 이미 처리된 파일 스킵
+  python scripts/etl_participants.py --dir data/participants
 """
 
 import argparse
 import asyncio
 import os
-import re
 import sys
-from datetime import datetime
 from pathlib import Path
-
-import xlrd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import pandas as pd
+from decimal import Decimal
+from sqlalchemy import select, func
+
 from app.db.session import AsyncSessionLocal
-from app.db.models import BidsHistory, BidLicenseType
-from app.db.normalize import parse_license_types
-from sqlalchemy import select
+from app.db.models import BidParticipants, BidsHistory
 
-DEFAULT_DIR = Path("G:/내 드라이브/gonggong/participants")
-LOG_FILE    = Path("data/downloads/_participants_etl.log")
+PARTICIPANTS_DIR = Path(__file__).parent.parent / "data" / "participants"
 
 
-# ── 정규화 유틸 ────────────────────────────────────────────────────────────────
+def extract_g2b_id(excel_path: Path) -> str | None:
+    """Excel 파일에서 G2B 공고번호 추출."""
+    try:
+        suffix = excel_path.suffix.lower()
+        if suffix == ".xls":
+            df = pd.read_excel(excel_path, header=None, engine="xlrd",
+                               engine_kwargs={"ignore_workbook_corruption": True})
+        else:
+            df = pd.read_excel(excel_path, header=None, engine="openpyxl")
 
-# normalize.py의 parse_license_types 사용 (위에서 import됨)
-
-
-def parse_percent(raw) -> float | None:
-    """'85.995%' 또는 '100.4829% (0.4829%)' → float (소수, 예: 0.85995)"""
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    m = re.search(r"([\d.]+)%", s)
-    if not m:
-        return None
-    val = float(m.group(1))
-    return val / 100.0
-
-
-def parse_price(raw) -> int | None:
-    """'8,135,922,331 원' 또는 float → int"""
-    if raw is None:
-        return None
-    if isinstance(raw, (int, float)):
-        v = int(raw)
-        return v if v > 0 else None
-    s = re.sub(r"[^\d]", "", str(raw))
-    return int(s) if s else None
-
-
-def parse_participants(raw) -> int:
-    """'전체 참여업체수 [ 참여업체수: 2038] ...' → 2038"""
-    if raw is None:
-        return 0
-    m = re.search(r"참여업체수[:\s]*(\d+)", str(raw))
-    return int(m.group(1)) if m else 0
-
-
-def parse_date(raw) -> "datetime.date | None":
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d"]:
-        try:
-            return datetime.strptime(s[:len(fmt)], fmt).date()
-        except ValueError:
-            continue
+        for i in range(min(10, len(df))):
+            row = df.iloc[i].tolist()
+            for j, val in enumerate(row):
+                # 공고번호 레이블 옆 값 탐색
+                if isinstance(val, str) and "공고번호" in val:
+                    if j + 2 < len(row) and pd.notna(row[j + 2]):
+                        return str(row[j + 2]).strip()
+                # R/L로 시작하는 공고번호 패턴 직접 탐색
+                if isinstance(val, str) and len(val) > 8 and "-" in val and val[0] in "RLG":
+                    return val.strip()
+    except Exception as e:
+        print(f"  [!] G2B ID 추출 실패 ({excel_path.name}): {e}")
     return None
 
 
-# ── 파일 파싱 ─────────────────────────────────────────────────────────────────
-
-def parse_participants_xls(path: Path) -> dict | None:
-    """participants_*.xls 1개 → bids_history 레코드 dict (실패 시 None)"""
+def extract_participants(excel_path: Path) -> list[dict]:
+    """Excel 파일에서 참여자 데이터 추출."""
     try:
-        wb = xlrd.open_workbook(str(path), ignore_workbook_corruption=True)
-        ws = wb.sheet_by_index(0)
+        suffix = excel_path.suffix.lower()
+        read_kwargs: dict = {"header": None}
+        if suffix == ".xls":
+            read_kwargs["engine"] = "xlrd"
+            read_kwargs["engine_kwargs"] = {"ignore_workbook_corruption": True}
+        else:
+            read_kwargs["engine"] = "openpyxl"
+
+        df_raw = pd.read_excel(excel_path, **read_kwargs)
+
+        header_row = None
+        for i, row in df_raw.iterrows():
+            if any("순위" in str(v) for v in row if pd.notna(v)):
+                header_row = i
+                break
+
+        if header_row is None:
+            return []
+
+        read_kwargs["header"] = header_row
+        df = pd.read_excel(excel_path, **read_kwargs)
+        df.columns = df.columns.str.strip()
+
+        col_rank   = next((c for c in df.columns if "순위" in str(c)), None)
+        col_amount = next((c for c in df.columns if "투찰금액" in str(c)), None)
+        col_rate   = next((c for c in df.columns if "투찰율" in str(c)), None)
+
+        if not all([col_rank, col_amount, col_rate]):
+            return []
+
+        records = []
+        for _, row in df.iterrows():
+            try:
+                rank = int(float(str(row[col_rank]).replace(",", "").strip()))
+                amount = int(float(str(row[col_amount]).replace(",", "").strip()))
+                rate_raw = float(str(row[col_rate]).replace(",", "").strip())
+                bid_rate = Decimal(str(rate_raw / 100 if rate_raw > 1 else rate_raw))
+                records.append({
+                    "rank": rank,
+                    "bid_amount": amount,
+                    "bid_rate": bid_rate,
+                    "is_winner": (rank == 1),
+                })
+            except (ValueError, TypeError):
+                continue
+
+        return records
+
     except Exception as e:
-        raise ValueError(f"xlrd 오픈 실패: {e}")
-
-    if ws.nrows < 7:
-        raise ValueError(f"행 수 부족: {ws.nrows}")
-
-    def cell(r, c):
-        try:
-            v = ws.cell_value(r, c)
-            return v if v != "" else None
-        except IndexError:
-            return None
-
-    # 포맷 확인 (행0 col0 = '공고명')
-    if str(cell(0, 0) or "").strip() != "공고명":
-        raise ValueError("공고명 레이아웃 아님")
-
-    project_id   = str(cell(2, 2) or "").strip()
-    client_name  = str(cell(2, 8) or "").strip() or None
-    region_raw   = str(cell(1, 8) or "").strip()
-    license_types = parse_license_types(str(cell(1, 2) or ""))
-    bid_date     = parse_date(cell(3, 2))
-    base_price   = parse_price(cell(4, 2))
-    lower_limit  = parse_percent(cell(4, 8))
-    adj_rate     = parse_percent(cell(5, 8))   # 예가/기초
-    winner_price = parse_price(str(cell(6, 2) or ""))
-    participants = parse_participants(cell(15, 0)) if ws.nrows > 15 else 0
-
-    # 유효성 검사
-    if not project_id:
-        raise ValueError("공고번호 없음")
-    if not license_types:
-        raise ValueError(f"공종 매핑 불가: {cell(1, 2)!r}")
-    if not base_price or base_price <= 0:
-        raise ValueError(f"기초금액 이상: {cell(4, 2)!r}")
-    if adj_rate is None or not (0.95 < adj_rate < 1.05):
-        raise ValueError(f"사정률 범위 밖: {cell(5, 8)!r} → {adj_rate}")
-    if lower_limit is None:
-        raise ValueError(f"낙찰하한율 파싱 실패: {cell(4, 8)!r}")
-
-    # 지역 정규화 (공백 정리)
-    region = region_raw if region_raw else "기타"
-
-    return {
-        "project_id":    project_id,
-        "client_name":   client_name,
-        "client_id":     None,
-        "region":        region,
-        "_license_types": license_types,
-        "base_price":    base_price,
-        "lower_limit_rate": lower_limit,
-        "adjustment_rate":  adj_rate,
-        "winner_price":  winner_price,
-        "participants":  participants,
-        "bid_date":      bid_date,
-        "bid_type":      "적격심사",
-        "price_method":  "복수예비가격",
-        "g2b_code":      None,
-    }
+        print(f"  [!] 참여자 추출 실패: {e}")
+        return []
 
 
-# ── DB 적재 ───────────────────────────────────────────────────────────────────
+async def process_file(excel_path: Path, project_ids_in_db: set[str]) -> tuple[int, str]:
+    g2b_id = extract_g2b_id(excel_path)
+    if not g2b_id:
+        return 0, "G2B ID 추출 실패"
 
-async def load_one(record: dict) -> str:
-    """'inserted' | 'skipped'"""
-    from decimal import Decimal
+    if g2b_id not in project_ids_in_db:
+        return 0, f"bids_history 미존재 ({g2b_id})"
+
+    records = extract_participants(excel_path)
+    if not records:
+        return 0, "참여자 데이터 없음"
+
+    inserted = 0
     async with AsyncSessionLocal() as session:
-        exists = await session.scalar(
-            select(BidsHistory.id).where(BidsHistory.project_id == record["project_id"])
-        )
-        if exists:
-            return "skipped"
-        session.add(BidsHistory(
-            project_id       = record["project_id"],
-            client_name      = record["client_name"],
-            client_id        = record["client_id"],
-            region           = record["region"],
-            base_price       = record["base_price"],
-            lower_limit_rate = Decimal(str(record["lower_limit_rate"])),
-            adjustment_rate  = Decimal(str(record["adjustment_rate"])),
-            winner_price     = record["winner_price"],
-            participants     = record["participants"],
-            bid_date         = record["bid_date"],
-            bid_type         = record["bid_type"],
-            price_method     = record["price_method"],
-            g2b_code         = record["g2b_code"],
-        ))
-        for lt in record.get("_license_types", []):
-            session.add(BidLicenseType(
-                project_id = record["project_id"],
-                type_name  = lt["type_name"],
-                size       = lt["size"],
-                is_mutual  = lt["is_mutual"],
-                is_primary = lt["is_primary"],
+        for r in records:
+            existing = await session.scalar(
+                select(BidParticipants).where(
+                    BidParticipants.project_id == g2b_id,
+                    BidParticipants.rank == r["rank"],
+                )
+            )
+            if existing:
+                continue
+            # NOTE: 이 스크립트는 bid_participants 만 적재한다. bids_history 의
+            # bid_type/price_method 는 여기서 설정하지 않으며, bids_history ETL
+            # (info21c 적재 스크립트) 에서 bid_type='적격심사',
+            # price_method='복수예비가격' 으로 설정해야 한다.
+            session.add(BidParticipants(
+                project_id = g2b_id,
+                rank       = r["rank"],
+                bid_amount = r["bid_amount"],
+                bid_rate   = r["bid_rate"],
+                is_winner  = r["is_winner"],
             ))
-        await session.commit()
-        return "inserted"
+            inserted += 1
+
+        if inserted > 0:
+            await session.commit()
+
+    return inserted, f"{g2b_id} → {inserted}건"
 
 
-# ── 로그 ─────────────────────────────────────────────────────────────────────
+async def main(participants_dir: Path) -> None:
+    files = sorted(participants_dir.glob("*.xls*"))
+    print(f"처리할 파일: {len(files)}개")
 
-def load_done() -> set[str]:
-    if not LOG_FILE.exists():
-        return set()
-    done = set()
-    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
-        if line.startswith("OK:"):
-            done.add(line[3:].strip())
-    return done
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(BidsHistory.project_id))
+        project_ids_in_db = {r[0] for r in result.fetchall()}
+    print(f"bids_history project_id: {len(project_ids_in_db)}건")
 
+    total_inserted = 0
+    total_skipped = 0
 
-def log_ok(filename: str):
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"OK:{filename}  [{ts}]\n")
+    for i, f in enumerate(files, 1):
+        inserted, msg = await process_file(f, project_ids_in_db)
+        if inserted > 0:
+            print(f"  [{i}/{len(files)}] OK: {msg}")
+            total_inserted += inserted
+        else:
+            print(f"  [{i}/{len(files)}] SKIP: {f.name} ({msg})")
+            total_skipped += 1
 
+    print(f"\n=== 완료: 적재 {total_inserted}건 / 스킵 {total_skipped}건 ===")
 
-# ── 메인 ─────────────────────────────────────────────────────────────────────
-
-async def main():
-    parser = argparse.ArgumentParser(description="participants XLS → bids_history")
-    parser.add_argument("--dir",     default=str(DEFAULT_DIR))
-    parser.add_argument("--resume",  action="store_true", help="처리된 파일 스킵")
-    args = parser.parse_args()
-
-    files = sorted(Path(args.dir).glob("participants_*.xls"))
-    if not files:
-        print(f"파일 없음: {args.dir}/participants_*.xls")
-        sys.exit(1)
-
-    done = load_done() if args.resume else set()
-    to_process = [f for f in files if f.name not in done]
-
-    print(f"총 {len(files)}개 / 처리 대상 {len(to_process)}개"
-          + (f" ({len(files) - len(to_process)}개 스킵)" if args.resume else ""))
-    print("=" * 60)
-
-    inserted = skipped = errors = 0
-
-    for i, f in enumerate(to_process, 1):
-        try:
-            record = parse_participants_xls(f)
-            result = await load_one(record)
-            if result == "inserted":
-                inserted += 1
-                log_ok(f.name)
-            else:
-                skipped += 1
-                log_ok(f.name)
-
-            if i % 50 == 0 or i == len(to_process):
-                print(f"  [{i}/{len(to_process)}] 신규:{inserted} 중복:{skipped} 오류:{errors}")
-
-        except Exception as e:
-            errors += 1
-            if errors <= 10:
-                print(f"  ERR {f.name}: {e}")
-
-    print("=" * 60)
-    print(f"완료: 신규 {inserted}건 / 중복 {skipped}건 / 오류 {errors}건")
+    async with AsyncSessionLocal() as session:
+        cnt = await session.scalar(select(func.count()).select_from(BidParticipants))
+        proj_cnt = await session.scalar(
+            select(func.count(BidParticipants.project_id.distinct()))
+        )
+        print(f"bid_participants 총: {cnt}건 / {proj_cnt}개 공고")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", default=str(PARTICIPANTS_DIR))
+    args = parser.parse_args()
+    asyncio.run(main(Path(args.dir)))

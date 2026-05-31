@@ -33,8 +33,14 @@ async def get_offset_distribution(db: AsyncSession) -> list[dict]:
         )
         .join(BidsHistory, BidParticipants.project_id == BidsHistory.project_id)
         .where(
-            BidsHistory.bid_type == TARGET_BID_TYPE,
-            BidsHistory.price_method == TARGET_PRICE_METHOD,
+            or_(
+                BidsHistory.bid_type == TARGET_BID_TYPE,
+                BidsHistory.bid_type == "기타",
+            ),
+            or_(
+                BidsHistory.price_method == TARGET_PRICE_METHOD,
+                BidsHistory.price_method == "기타",
+            ),
         )
     )
     return [
