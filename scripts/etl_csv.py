@@ -52,6 +52,8 @@ def normalize_bid_type(raw: str) -> str:
     raw = str(raw).strip()
     if "적격" in raw:
         return "적격심사"
+    if "종합심사" in raw:
+        return "종합심사"
     if "최저가" in raw:
         return "최저가"
     if "협상" in raw:

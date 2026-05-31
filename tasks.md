@@ -53,11 +53,11 @@ status: pending → in_progress → done / skipped
 
 ### T-006 — info21c ETL bid_type 적재 수정
 - **why:** 현재 scripts/info21c_participants.py (bids_history ETL)가 bid_type/price_method를 설정하지 않아 default='기타' 적용. 향후 적재 데이터 품질 보장 필요.
-- **status:** pending
+- **status:** done (2026-06-01)
 - **acceptance:**
   - 신규 적재 후 bids_history.bid_type = '적격심사' 확인
   - ETL 로그에 bid_type 설정 확인 메시지
-- **notes:** etl_participants.py는 bid_participants만 다룸. bids_history 적재 스크립트 별도 확인 필요.
+- **notes:** info21c_participants.py는 이미 parse_detail()에서 bid_type 추출 + update_bid_type_and_method()로 업데이트 구현됨. etl_csv.py도 normalize_bid_type()으로 처리 중. 추가로 normalize_bid_type()에 "종합심사" 케이스 추가함 (2026-06-01).
 
 ---
 
