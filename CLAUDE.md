@@ -213,10 +213,8 @@ app/
 **모든 Dev 세션은 이 순서를 따른다:**
 
 ### 1. 다음 태스크 확인
-Taskmaster에서 최우선 태스크를 확인한다:
-```
-get_next_task 도구 호출 (Taskmaster MCP)
-```
+`tasks.md`를 읽어 `status: pending` 중 우선순위가 가장 높은 태스크를 선택한다.
+태스크를 시작하면 해당 항목의 status를 `in_progress`로 변경한다.
 
 ### 2. Why 재검토 (3가지 질문에 답하고 진행 여부 결정)
 1. **지금도 이게 가장 중요한 작업인가?** — 더 급한 버그나 블로커가 생겼는가?
@@ -224,11 +222,11 @@ get_next_task 도구 호출 (Taskmaster MCP)
 3. **아키텍처 방향과 맞나?** — 분포 기반 의사결정 도구 방향과 일치하는가?
    (절대 금지: 사정률 예측 강화, ML 기반 숫자 추천, 예정가격 예측)
 
-→ **진행**: `set_task_status` in_progress로 변경 후 구현 시작
-→ **스킵**: Taskmaster에 이유 기록 (`update_task`의 notes 필드) 후 다음 태스크로
+→ **진행**: `tasks.md`에서 status `in_progress`로 변경 후 구현 시작
+→ **스킵**: `tasks.md`에 skip 이유를 notes 필드에 기록하고 다음 태스크로
 
 ### 3. 구현 완료 후 handoff 작성
-구현이 완료되면 반드시 `eval-handoff.md`를 작성하고 태스크를 done으로 마킹한다.
+구현이 완료되면 `tasks.md`에서 status를 `done`으로 변경하고, 반드시 `eval-handoff.md`를 작성한다.
 
 `eval-handoff.md` 형식:
 ```markdown
