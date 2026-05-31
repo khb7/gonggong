@@ -49,7 +49,23 @@
       "Bash(ssh:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(sqlite3 /c/Users/onebe/gonggong/data/gonggong.db \"SELECT project_type, COUNT\\(*\\) as cnt FROM bids_history GROUP BY project_type ORDER BY cnt DESC;\")"
+      "Bash(sqlite3 /c/Users/onebe/gonggong/data/gonggong.db \"SELECT project_type, COUNT\\(*\\) as cnt FROM bids_history GROUP BY project_type ORDER BY cnt DESC;\")",
+      "PowerShell([System.IO.File]::ReadAllText\\(\"C:\\\\Users\\\\onebe\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-onebe-gonggong\\\\c631f612-edcb-467f-8263-9090338665fe\\\\tasks\\\\b7plm2clr.output\"\\) | Select-Object -First 100)",
+      "Bash(npx tsc *)",
+      "Bash(uvicorn app.main:app --port 8000)",
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "mcp__plugin_playwright_playwright__browser_take_screenshot",
+      "mcp__plugin_playwright_playwright__browser_snapshot",
+      "mcp__plugin_playwright_playwright__browser_type",
+      "mcp__plugin_playwright_playwright__browser_click",
+      "mcp__plugin_playwright_playwright__browser_wait_for",
+      "Bash(git push *)",
+      "mcp__plugin_playwright_playwright__browser_evaluate",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(task-master --version)",
+      "Bash(npx task-master-ai *)",
+      "Bash(git *)"
     ]
   }
 }

@@ -191,10 +191,15 @@ async def search_and_collect_links(
 async def parse_detail(page, url: str) -> dict | None:
     """
     상세 페이지에서 bid_type, price_method, g2b_notice_id 추출.
-    유찰이면 None 반환.
+    유찰/기초금액 없음이면 skip 반환.
     """
     await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-    await page.wait_for_timeout(500)
+    await page.wait_for_timeout(300)
+
+    # 기초금액 0 체크 (민간 발주처 등)
+    basic_val = await page.input_value("#basic")
+    if not basic_val or float(basic_val or 0) == 0:
+        return {"skip": True, "reason": "기초금액 없음(민간)"}
 
     # 유찰 체크
     is_yuchal = await page.locator(".alert-danger").count() > 0
@@ -245,45 +250,37 @@ async def parse_detail(page, url: str) -> dict | None:
 
 # ── Excel 다운로드 ────────────────────────────────────────────────────────────
 
-async def download_excel(page, context, bidid: str, retries: int = 2) -> Path | None:
-    """상세 페이지에서 엑셀저장 버튼 클릭 -> 파일 다운로드. 실패 시 재시도."""
+async def download_excel(page, context, bidid: str) -> Path | None:
+    """상세 페이지에서 엑셀저장 버튼 클릭 -> 파일 다운로드."""
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 이미 다운받은 파일이 있으면 재사용
     for ext in (".xlsx", ".xls"):
         existing = DOWNLOAD_DIR / f"participants_{bidid}{ext}"
         if existing.exists():
             return existing
 
-    for attempt in range(1, retries + 1):
-        try:
-            async with page.expect_download(timeout=90_000) as dl_info:
-                await page.click("button.excel-btn")
-                await page.wait_for_timeout(1500)
+    try:
+        async with page.expect_download(timeout=30_000) as dl_info:
+            await page.click("button.excel-btn")
+            await page.wait_for_timeout(1000)
 
-                modal = page.locator(".modal.show, .modal[style*='display: block']")
-                if await modal.count() > 0:
-                    for sel in ["button:has-text('확인')", ".modal .btn-primary"]:
-                        btn = page.locator(sel)
-                        if await btn.count() > 0:
-                            await btn.first.click()
-                            break
+            modal = page.locator(".modal.show, .modal[style*='display: block']")
+            if await modal.count() > 0:
+                for sel in ["button:has-text('확인')", ".modal .btn-primary"]:
+                    btn = page.locator(sel)
+                    if await btn.count() > 0:
+                        await btn.first.click()
+                        break
 
-            dl: Download = await dl_info.value
-            suffix = Path(dl.suggested_filename).suffix or ".xlsx"
-            save_path = DOWNLOAD_DIR / f"participants_{bidid}{suffix}"
-            await dl.save_as(str(save_path))
-            return save_path
+        dl: Download = await dl_info.value
+        suffix = Path(dl.suggested_filename).suffix or ".xlsx"
+        save_path = DOWNLOAD_DIR / f"participants_{bidid}{suffix}"
+        await dl.save_as(str(save_path))
+        return save_path
 
-        except Exception as e:
-            print(f"    [!] 다운로드 실패 ({attempt}/{retries}): {str(e)[:80]}")
-            if attempt < retries:
-                await page.wait_for_timeout(2000)
-                # 페이지 새로고침 후 재시도
-                await page.reload(wait_until="domcontentloaded")
-                await page.wait_for_timeout(1000)
-
-    return None
+    except Exception as e:
+        print(f"    [!] 다운로드 실패: {str(e)[:60]}")
+        return None
 
 
 # ── DB 업데이트 ───────────────────────────────────────────────────────────────
@@ -408,6 +405,24 @@ async def run(
 
         total_ok = total_skip = total_err = 0
 
+        async def ensure_page():
+            """브라우저/페이지가 죽었으면 재시작해서 새 page 반환."""
+            nonlocal browser, context, page
+            try:
+                await page.title()  # 살아있는지 확인
+                return page
+            except Exception:
+                print("  [브라우저 재시작]")
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+                browser = await pw.chromium.launch(headless=headless)
+                context = await browser.new_context(accept_downloads=True)
+                page    = await context.new_page()
+                await login(page, user_id, password)
+                return page
+
         for idx, (bidid, url) in enumerate(links, 1):
             if bidid in done:
                 total_skip += 1
@@ -416,6 +431,8 @@ async def run(
             print(f"\n[{idx}/{len(links)}] {bidid}")
 
             try:
+                page = await ensure_page()
+
                 # 1. 상세 페이지 파싱
                 info = await parse_detail(page, url)
 
@@ -450,13 +467,20 @@ async def run(
                 total_ok += 1
 
             except Exception as e:
-                print(f"  [!] 오류: {str(e)[:100]}")
-                log_result(bidid, "ERR", str(e)[:100])
+                err_msg = str(e)[:100]
+                print(f"  [!] 오류: {err_msg}")
+                log_result(bidid, "ERR", err_msg)
                 total_err += 1
 
-            await page.wait_for_timeout(300)
+            try:
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
 
-        await browser.close()
+        try:
+            await browser.close()
+        except Exception:
+            pass
 
     print(f"\n=== 완료: {total_ok}건 성공 / {total_skip}건 스킵 / {total_err}건 오류 ===")
 

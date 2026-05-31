@@ -1,0 +1,73 @@
+- generic [ref=e2]:
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e4]:
+    - generic [ref=e8]:
+      - heading "공공입찰 투찰 계산기" [level=1] [ref=e10]
+      - generic [ref=e12]:
+        - generic [ref=e13]: 메뉴
+        - list [ref=e15]:
+          - listitem [ref=e16]:
+            - link "투찰가 계산" [ref=e17] [cursor=pointer]:
+              - /url: /
+              - img [ref=e18]
+              - generic [ref=e20]: 투찰가 계산
+          - listitem [ref=e21]:
+            - link "분포 분석" [ref=e22] [cursor=pointer]:
+              - /url: /bid-distribution
+              - img [ref=e23]
+              - generic [ref=e25]: 분포 분석
+          - listitem [ref=e26]:
+            - link "데이터 현황" [ref=e27] [cursor=pointer]:
+              - /url: /overview
+              - img [ref=e28]
+              - generic [ref=e30]: 데이터 현황
+          - listitem [ref=e31]:
+            - link "발주처 통계" [ref=e32] [cursor=pointer]:
+              - /url: /clients
+              - img [ref=e33]
+              - generic [ref=e37]: 발주처 통계
+          - listitem [ref=e38]:
+            - link "사정률 분포" [ref=e39] [cursor=pointer]:
+              - /url: /distribution
+              - img [ref=e40]
+              - generic [ref=e43]: 사정률 분포
+          - listitem [ref=e44]:
+            - link "데이터 수집" [ref=e45] [cursor=pointer]:
+              - /url: /collection
+              - img [ref=e46]
+              - generic [ref=e50]: 데이터 수집
+    - generic [ref=e51]:
+      - banner [ref=e52]:
+        - button "Toggle Sidebar" [ref=e53] [cursor=pointer]:
+          - img
+          - generic [ref=e54]: Toggle Sidebar
+      - main [ref=e55]:
+        - generic [ref=e56]:
+          - heading "경쟁자 분포 분석" [level=2] [ref=e57]
+          - button "info21c 공고 텍스트 붙여넣기" [ref=e59] [cursor=pointer]:
+            - generic [ref=e60]:
+              - img [ref=e61]
+              - text: info21c 공고 텍스트 붙여넣기
+            - img [ref=e65]
+          - generic [ref=e67]:
+            - generic [ref=e68]:
+              - text: 공고 번호
+              - 'textbox "예: R25BK00678040" [active] [ref=e69]'
+            - generic [ref=e70]:
+              - generic [ref=e71]:
+                - text: 발주처
+                - 'textbox "예: 서울특별시" [ref=e72]'
+              - generic [ref=e73]:
+                - text: 지역
+                - 'textbox "예: 서울" [ref=e74]'
+              - generic [ref=e75]:
+                - text: 공종
+                - 'textbox "예: 실내건축" [ref=e76]'
+              - generic [ref=e77]:
+                - text: 기초금액 (원)
+                - spinbutton [ref=e78]
+              - generic [ref=e79]:
+                - text: 하한율
+                - spinbutton [ref=e80]
+            - button "분포 조회" [disabled]
