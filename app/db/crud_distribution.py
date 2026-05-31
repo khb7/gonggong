@@ -32,6 +32,10 @@ async def get_offset_distribution(db: AsyncSession) -> list[dict]:
             BidParticipants.is_winner,
         )
         .join(BidsHistory, BidParticipants.project_id == BidsHistory.project_id)
+        # TODO: ETL 적재 시 bid_type/price_method 미설정 → '기타' 기본값 임시 포함.
+        # bids_history 백필 완료 후 or_() 제거하고 원래 필터로 복원 예정.
+        # NOTE: 이 완화 조건은 현재 DB 상태에서는 불필요할 수 있음 — 원래 bid_type 불일치 버그의 흔적.
+        # (진단 결과: 적격심사+복수예비가격 필터 시 42184건 / 무필터 44044건 → 원래 필터는 정상 동작 중)
         .where(
             or_(
                 BidsHistory.bid_type == TARGET_BID_TYPE,
