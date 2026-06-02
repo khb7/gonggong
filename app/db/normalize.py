@@ -72,6 +72,63 @@ import re
 _REGION_CODE_RE = re.compile(r"\[.*?\]")
 
 
+# ── 면허업종 파싱 ────────────────────────────────────────────────
+
+_SIZE_RE = re.compile(r"\[([대소])\]")          # [대] / [소]
+_FIRST_BRACKET_RE = re.compile(r"[\[(]")        # 첫 번째 [ 또는 (
+
+
+def parse_license_types(raw: str | None) -> list[dict]:
+    """
+    Info21c 면허업종제한목록 원문을 구조화된 리스트로 파싱한다.
+
+    '건축,토건,실내건축[대](상호허용)' →
+    [
+        {"type_name": "건축",     "size": None, "is_mutual": False, "is_primary": False},
+        {"type_name": "토건",     "size": None, "is_mutual": False, "is_primary": False},
+        {"type_name": "실내건축", "size": "대",  "is_mutual": True,  "is_primary": False},
+    ]
+
+    규칙:
+      - 쉼표(,) 구분자로 분리
+      - [대] / [소]: size 필드
+      - (상호허용): is_mutual = True
+      - (주력:...): is_primary = True
+      - type_name: 첫 번째 [ 또는 ( 이전 텍스트
+    """
+    if not raw:
+        return []
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    for token in str(raw).split(","):
+        token = token.strip()
+        if not token:
+            continue
+
+        size_m = _SIZE_RE.search(token)
+        size = size_m.group(1) if size_m else None
+        is_mutual = "(상호허용)" in token
+        is_primary = "(주력:" in token
+
+        bracket_m = _FIRST_BRACKET_RE.search(token)
+        type_name = token[: bracket_m.start()].strip() if bracket_m else token.strip()
+
+        if not type_name or type_name in seen:
+            continue
+        seen.add(type_name)
+
+        results.append({
+            "type_name":  type_name,
+            "size":       size,
+            "is_mutual":  is_mutual,
+            "is_primary": is_primary,
+        })
+
+    return results
+
+
 def normalize_region(raw: str | None) -> str:
     """
     지역명을 시/도 단위 2글자로 정규화한다.

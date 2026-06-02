@@ -1,46 +1,52 @@
 """
 Info21c 낙찰결과 참여자 데이터 수집 스크립트.
 
-사전 준비:
-  1. Brave를 디버그 포트로 실행:
-     "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe" --remote-debugging-port=9222
-  2. Info21c 로그인 → 공종/지역 필터 직접 설정 (날짜는 스크립트가 자동 변경)
-  3. 스크립트 실행:
-     python scripts/info21c_participants.py --type 건축 --start 202301 --end 202603
-     python scripts/info21c_participants.py --type 조경 --start 202301 --end 202603
+각 공고 상세 페이지에서:
+  - bid_type / price_method 추출 → bids_history 업데이트
+  - Excel 다운로드 → bid_participants 적재
 
-결과 파일:
-  G:\\내 드라이브\\gonggong\\participants\\participants_{bidid}_{page}.xls
+사용법:
+  python scripts/info21c_participants.py --start 20250101 --end 20250531 --type 0002
+  python scripts/info21c_participants.py --start 20250101 --end 20250531 --type 0023
+
+사전 조건:
+  - info21c_downloader.py 로 목록 Excel 다운 및 bids_history 적재 완료
+  - pip install playwright && playwright install chromium
+
+저장 경로:
+  data/participants/participants_{bidid}.xlsx
 로그 파일:
-  data/downloads/_participants.log
+  data/downloads/_participants_etl.log
 """
 
 import argparse
 import asyncio
+import os
 import re
-import time
-from calendar import monthrange
+import sys
+from datetime import datetime
 from pathlib import Path
 
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+from playwright.async_api import async_playwright, Download, TimeoutError as PWTimeout
 
-CDP_URL      = "http://localhost:9222"
-DOWNLOAD_DIR = Path("G:/내 드라이브/gonggong/participants")
-LOG_FILE     = Path("data/downloads/_participants.log")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+LOGIN_URL    = "https://www.info21c.net/info21c/member/login/index"
+LIST_URL     = "https://infose.info21c.net/info21c/bids/list?bidtype=con&bid_suc=suc"
+
+DEFAULT_ID   = os.getenv("INFO21C_ID", "nw8856")
+DEFAULT_PW   = os.getenv("INFO21C_PW", "nw8856")
+
+DOWNLOAD_DIR = Path(__file__).parent.parent / "data" / "participants"
+LOG_FILE     = Path(__file__).parent.parent / "data" / "downloads" / "_participants_etl.log"
+
+LICENSE_TYPES    = {"0002": "실내건축", "0023": "조경"}
+LICENSE_CODE_MAP = {"0002": "C002", "0023": "C084"}
+
+TIMEOUT = 30_000
 
 
-# ── 유틸 ──────────────────────────────────────────────────────────────────────
-
-def iter_months(start_ym: str, end_ym: str):
-    y, m   = int(start_ym[:4]), int(start_ym[4:])
-    ey, em = int(end_ym[:4]),   int(end_ym[4:])
-    while (y, m) <= (ey, em):
-        last = monthrange(y, m)[1]
-        yield f"{y:04d}{m:02d}01", f"{y:04d}{m:02d}{last:02d}"
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
-
+# ── 로그 ──────────────────────────────────────────────────────────────────────
 
 def load_done() -> set[str]:
     if not LOG_FILE.exists():
@@ -48,341 +54,456 @@ def load_done() -> set[str]:
     done = set()
     for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
         if line.startswith("OK:"):
-            done.add(line[3:].strip())
+            done.add(line[3:].split()[0])
     return done
 
 
-def log_done(bidid: str):
+def log_result(bidid: str, status: str, detail: str = ""):
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"OK:{bidid}\n")
+        f.write(f"{status}:{bidid}  [{ts}] {detail}\n")
 
 
-# ── 목록 페이지 조작 ──────────────────────────────────────────────────────────
+# ── 로그인 ────────────────────────────────────────────────────────────────────
 
-async def set_date_and_search(page, start: str, end: str) -> int:
-    """날짜 변경 후 조회. list_link 수 반환."""
-    fmt_s = f"{start[:4]}-{start[4:6]}-{start[6:]}"
-    fmt_e = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+async def login(page, user_id: str, password: str) -> None:
+    print(f"[로그인] {LOGIN_URL}")
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_selector("input[name='id']", timeout=10_000)
+    except PWTimeout:
+        pass
 
+    for sel in ["input[name='id']", "#id"]:
+        loc = page.locator(sel)
+        if await loc.count() > 0:
+            await loc.first.fill(user_id)
+            break
+
+    for sel in ["input[name='pass']", "#pass"]:
+        loc = page.locator(sel)
+        if await loc.count() > 0:
+            await loc.first.fill(password)
+            break
+
+    await page.click("#login_btn")
+    await page.wait_for_load_state("networkidle")
+
+    if "login" in page.url.lower() or "member" in page.url.lower():
+        raise RuntimeError(f"로그인 실패 (URL: {page.url})")
+    print(f"  -> 로그인 성공")
+
+
+# ── 목록 페이지 ───────────────────────────────────────────────────────────────
+
+async def search_and_collect_links(
+    page, start_date: str, end_date: str, license_type: str
+) -> list[tuple[str, str]]:
+    """검색 후 전체 페이지의 (info21c_bidid, href) 수집."""
+    print(f"\n[검색] {start_date}~{end_date} / {LICENSE_TYPES.get(license_type)}")
+    await page.goto(LIST_URL, wait_until="networkidle")
+
+    # 날짜 입력
+    fmt_s = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    fmt_e = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:]}"
     await page.evaluate(
         "(args) => {"
-        "  document.querySelector('#config_from_date').value = args[0];"
-        "  document.querySelector('#config_to_date').value   = args[1];"
+        "  document.querySelector('[name=config_from_date]').value = args[0];"
+        "  document.querySelector('[name=config_to_date]').value   = args[1];"
         "}",
         [fmt_s, fmt_e]
     )
     await page.wait_for_timeout(300)
-    await page.click("#topSearchBtn")
 
+    # 공종 체크박스
+    code_val = LICENSE_CODE_MAP.get(license_type, "C002")
+    await page.evaluate(
+        "(val) => {"
+        "  document.querySelectorAll('input[name=itemcode]').forEach(cb => { cb.checked = false; });"
+        "  var t = document.querySelector('input[name=itemcode][value=\"' + val + '\"]');"
+        "  if (t) { t.checked = true; t.dispatchEvent(new Event('change', {bubbles:true})); }"
+        "}",
+        code_val
+    )
+    await page.wait_for_timeout(300)
+
+    # 검색
+    await page.click("#config_search_btn")
     try:
-        await page.wait_for_selector("a.list_link", timeout=30_000)
+        await page.wait_for_selector("a.list_link", timeout=TIMEOUT)
     except PWTimeout:
-        return 0
+        print("  -> 결과 없음")
+        return []
 
-    # 페이지 크기 100으로
+    # 페이지 크기 100
     changed = await page.evaluate("""
         () => {
             var sel = document.querySelector('select[name=pageSize]');
-            if (sel && sel.value !== '100') {
-                sel.value = '100';
-                sel.dispatchEvent(new Event('change', {bubbles:true}));
-                return true;
-            }
-            return false;
+            if (!sel) return false;
+            sel.value = '100';
+            sel.dispatchEvent(new Event('change', {bubbles:true}));
+            return true;
         }
     """)
     if changed:
-        try:
-            await page.wait_for_selector("a.list_link", state="detached", timeout=5_000)
-        except PWTimeout:
-            pass
-        try:
-            await page.wait_for_selector("a.list_link", timeout=15_000)
-        except PWTimeout:
-            pass
+        await page.wait_for_timeout(1500)
 
-    return await page.locator("a.list_link").count()
-
-
-async def get_links_on_page(page) -> list[tuple[str, str]]:
-    """현재 목록 페이지의 (bidid, href) 리스트 반환."""
-    hrefs = await page.evaluate("""
-        () => Array.from(document.querySelectorAll('a.list_link'))
-                   .map(a => a.getAttribute('href') || '')
-    """)
-    result = []
-    for href in hrefs:
-        m = re.search(r"bidid=([^&]+)", href)
-        if m:
-            result.append((m.group(1), href))
-    return result
-
-
-async def go_next_page(page) -> bool:
-    """목록/상세 공통 다음 페이지 이동."""
-    for sel in ["a.next:not(.disabled)", ".paging a.next",
-                "li.next:not(.disabled) a", "a[title='다음']", "button[title='다음']"]:
-        loc = page.locator(sel)
-        if await loc.count() > 0:
-            await loc.first.click()
-            await page.wait_for_timeout(1_000)
-            return True
-
-    current = await page.evaluate("""
-        () => {
-            var el = document.querySelector('.paging .active, .paging .on, .pagination .active');
-            return el ? parseInt(el.innerText.trim()) : null;
-        }
-    """)
-    if current:
-        moved = await page.evaluate(
-            f"() => {{ if (typeof goPage==='function') {{ goPage({current + 1}); return true; }} return false; }}"
-        )
-        if moved:
-            await page.wait_for_timeout(1_000)
-            return True
-
-    return False
-
-
-# ── 다운로드 ──────────────────────────────────────────────────────────────────
-
-async def wait_for_new_file(since: float, timeout: int = 60) -> Path | None:
-    """DOWNLOAD_DIR 에서 since 이후 생성된 xls/xlsx 반환."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        await asyncio.sleep(0.5)
-        for f in list(DOWNLOAD_DIR.glob("*.xls")) + list(DOWNLOAD_DIR.glob("*.xlsx")):
-            if f.name.endswith(".crdownload"):
-                continue
-            if f.stat().st_mtime >= since:
-                return f
-    return None
-
-
-async def click_download_btn(popup) -> bool:
-    """엑셀 다운로드 버튼 클릭. 성공 여부 반환."""
-    # info21c_pager 와 동일 셀렉터 우선
-    for sel in [
-        "span[name='excelSave']",
-        "span[name='excelSaveBtn']",
-        "button:has-text('엑셀')",
-        "a:has-text('엑셀다운로드')",
-    ]:
-        loc = popup.locator(sel)
-        if await loc.count() > 0:
-            await loc.first.click()
-            await popup.wait_for_timeout(1_500)
-            # 확인 모달 처리
-            if await popup.locator(".modal.in, .modal[style*='display: block']").count() > 0:
-                for msel in ["button:has-text('확인')", ".modal .btn-primary", ".modal button[type='submit']"]:
-                    ml = popup.locator(msel)
-                    if await ml.count() > 0:
-                        await ml.first.click()
-                        break
-            return True
-    return False
-
-
-# ── 상세 페이지 처리 ──────────────────────────────────────────────────────────
-
-async def download_participants(popup, bidid: str, context) -> int:
-    """
-    참여자 상세 팝업에서 모든 페이지 다운로드.
-    반환값: 다운로드한 파일 수
-    """
-    # CDP 다운로드 경로 설정
-    cdp = await context.new_cdp_session(popup)
-    await cdp.send("Page.setDownloadBehavior", {
-        "behavior":     "allow",
-        "downloadPath": str(DOWNLOAD_DIR.absolute()),
-    })
-
-    # 페이지 크기 100으로
-    await popup.evaluate("""
-        () => {
-            var sel = document.querySelector('select[name=pageSize]');
-            if (sel && sel.value !== '100') {
-                sel.value = '100';
-                sel.dispatchEvent(new Event('change', {bubbles:true}));
-            }
-        }
-    """)
-    await popup.wait_for_timeout(800)
-
-    # 엑셀 저장은 전체 목록을 한 번에 내보내므로 1회만 다운로드
-    click_time = time.time() - 1
-    ok = await click_download_btn(popup)
-    if not ok:
-        print("    ⚠ 다운로드 버튼 찾기 실패")
-        return 0
-
-    new_file = await wait_for_new_file(click_time)
-    if not new_file:
-        print("    ⚠ 파일 감지 실패")
-        return 0
-
-    save_name = f"participants_{bidid}_1{new_file.suffix}"
-    new_file.replace(DOWNLOAD_DIR / save_name)
-    print(f"    → {save_name}")
-    return 1
-
-
-# ── 월 단위 처리 ──────────────────────────────────────────────────────────────
-
-async def collect_all_links(page) -> list[tuple[str, str]]:
-    """현재 검색 결과 전 페이지의 (bidid, href) 수집."""
-    all_links = []
-    list_page = 1
+    # 전체 페이지 링크 수집
+    all_links: list[tuple[str, str]] = []
+    page_num = 1
     while True:
-        links = await get_links_on_page(page)
-        print(f"  [목록 {list_page}p] {len(links)}건 수집")
-        all_links.extend(links)
-        if len(links) < 100:
+        hrefs = await page.evaluate("""
+            () => Array.from(document.querySelectorAll('a.list_link'))
+                       .map(a => a.getAttribute('href') || '')
+        """)
+        for href in hrefs:
+            # href 형태: /suc/view/con/250509183018223-00-00-01
+            m = re.search(r"/suc/view/con/([^?&\"']+)", href)
+            if m:
+                bidid = m.group(1)
+                full = f"https://cloud.info21c.net{href}" if href.startswith("/") else href
+                all_links.append((bidid, full))
+
+        print(f"  [목록 {page_num}p] {len(hrefs)}건")
+        if len(hrefs) < 100:
             break
-        if not await go_next_page(page):
+
+        # 다음 페이지
+        moved = False
+        for sel in ["a.next:not(.disabled)", ".paging a.next", "li.next:not(.disabled) a"]:
+            loc = page.locator(sel)
+            if await loc.count() > 0:
+                await loc.first.click()
+                await page.wait_for_timeout(1000)
+                moved = True
+                break
+        if not moved:
             break
-        list_page += 1
+        page_num += 1
+
+    print(f"  -> 총 {len(all_links)}건 수집")
     return all_links
 
 
-async def process_month(
-    page, context, start: str, end: str, done: set[str]
-) -> tuple[int, int]:
-    label = f"{start[:4]}.{start[4:6]}"
-    print(f"\n{'='*50}")
-    print(f"[{label}] 날짜 설정 중...")
+# ── 상세 페이지 파싱 ──────────────────────────────────────────────────────────
 
-    count = await set_date_and_search(page, start, end)
-    if count == 0:
-        print("  → 결과 없음")
-        return 0, 0
+async def parse_detail(page, url: str) -> dict | None:
+    """
+    상세 페이지에서 bid_type, price_method, g2b_notice_id 추출.
+    유찰/기초금액 없음이면 skip 반환.
+    """
+    await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+    await page.wait_for_timeout(300)
 
-    # 1단계: 해당 월 링크 전부 수집
-    all_links = await collect_all_links(page)
-    print(f"  총 {len(all_links)}건")
+    # 기초금액 0 체크 (민간 발주처 등)
+    basic_val = await page.input_value("#basic")
+    if not basic_val or float(basic_val or 0) == 0:
+        return {"skip": True, "reason": "기초금액 없음(민간)"}
 
-    # base URL 추출 (예: https://infose.info21c.net)
-    from urllib.parse import urlparse
-    parsed = urlparse(page.url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    # 유찰 체크
+    is_yuchal = await page.locator(".alert-danger").count() > 0
+    if is_yuchal:
+        return {"skip": True, "reason": "유찰"}
 
-    total_done = total_skip = 0
+    # G2B 공고번호
+    g2b_notice_id = await page.evaluate("""
+        () => {
+            var rows = document.querySelectorAll('.basic table tbody tr');
+            for (var r of rows) {
+                var ths = r.querySelectorAll('th');
+                for (var i = 0; i < ths.length; i++) {
+                    if (ths[i].textContent.includes('공고번호')) {
+                        var tds = r.querySelectorAll('td');
+                        return tds[i] ? tds[i].textContent.trim() : null;
+                    }
+                }
+            }
+            return null;
+        }
+    """)
 
-    # 2단계: 각 상세 URL로 직접 이동
-    for idx, (bidid, href) in enumerate(all_links, 1):
-        if bidid in done:
-            total_skip += 1
-            continue
+    # price_method: 개찰결과 섹션에 복수예가 테이블 있으면 복수예비가격
+    has_multispare = await page.locator("div.multispare").count() > 0
+    price_method = "복수예비가격" if has_multispare else "고정예정가격"
 
-        print(f"  [{idx}/{len(all_links)}] {bidid}")
-        full_url = base_url + href if href.startswith("/") else href
+    # bid_type: 종합심사 안내문 or bidproc 값으로 판별
+    is_jonghabjsim = await page.locator("text=종합심사낙찰제 공고입니다").count() > 0
+    bidproc = await page.evaluate("() => { var el = document.getElementById('bidproc'); return el ? el.value : ''; }")
 
-        try:
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=20_000)
+    if is_jonghabjsim:
+        bid_type = "종합심사"
+    elif bidproc == "N":
+        bid_type = "최저가"
+    elif bidproc == "T":
+        bid_type = "협상"
+    else:
+        bid_type = "적격심사"
 
-            n = await download_participants(page, bidid, context)
-            if n > 0:
-                log_done(bidid)
-                done.add(bidid)
-                total_done += 1
-                print(f"    → 완료 ({n}파일)")
-            else:
-                print(f"    ⚠ 다운로드 0건")
+    return {
+        "skip": False,
+        "g2b_notice_id": g2b_notice_id,
+        "bid_type": bid_type,
+        "price_method": price_method,
+    }
 
-        except Exception as e:
-            print(f"    ⚠ 오류: {str(e)[:100]}")
 
-        await page.wait_for_timeout(300)
+# ── Excel 다운로드 ────────────────────────────────────────────────────────────
 
-    return total_done, total_skip
+async def download_excel(page, context, bidid: str) -> Path | None:
+    """상세 페이지에서 엑셀저장 버튼 클릭 -> 파일 다운로드."""
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    for ext in (".xlsx", ".xls"):
+        existing = DOWNLOAD_DIR / f"participants_{bidid}{ext}"
+        if existing.exists():
+            return existing
+
+    try:
+        async with page.expect_download(timeout=30_000) as dl_info:
+            await page.click("button.excel-btn")
+            await page.wait_for_timeout(1000)
+
+            modal = page.locator(".modal.show, .modal[style*='display: block']")
+            if await modal.count() > 0:
+                for sel in ["button:has-text('확인')", ".modal .btn-primary"]:
+                    btn = page.locator(sel)
+                    if await btn.count() > 0:
+                        await btn.first.click()
+                        break
+
+        dl: Download = await dl_info.value
+        suffix = Path(dl.suggested_filename).suffix or ".xlsx"
+        save_path = DOWNLOAD_DIR / f"participants_{bidid}{suffix}"
+        await dl.save_as(str(save_path))
+        return save_path
+
+    except Exception as e:
+        print(f"    [!] 다운로드 실패: {str(e)[:60]}")
+        return None
+
+
+# ── DB 업데이트 ───────────────────────────────────────────────────────────────
+
+async def update_bid_type_and_method(project_id: str, bid_type: str, price_method: str) -> None:
+    """bids_history의 bid_type, price_method 업데이트."""
+    from app.db.session import AsyncSessionLocal
+    from app.db.models import BidsHistory
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as session:
+        row = await session.scalar(
+            select(BidsHistory).where(BidsHistory.project_id == project_id)
+        )
+        if row:
+            row.bid_type     = bid_type
+            row.price_method = price_method
+            await session.commit()
+
+
+async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
+    """참여자 Excel -> bid_participants 적재. 삽입 건수 반환."""
+    import pandas as pd
+    from decimal import Decimal
+    from app.db.session import AsyncSessionLocal
+    from app.db.models import BidParticipants
+    from sqlalchemy import select
+
+    try:
+        suffix = excel_path.suffix.lower()
+        engine = "xlrd" if suffix == ".xls" else "openpyxl"
+        engine_kwargs = {"ignore_workbook_corruption": True} if suffix == ".xls" else {}
+
+        # 헤더 행 동적 탐색 (순위 컬럼이 있는 행)
+        read_kwargs = {"header": None, "engine": engine}
+        if engine_kwargs:
+            read_kwargs["engine_kwargs"] = engine_kwargs
+        df_raw = pd.read_excel(excel_path, **read_kwargs)
+
+        header_row = None
+        for i, row in df_raw.iterrows():
+            if any("순위" in str(v) for v in row if pd.notna(v)):
+                header_row = i
+                break
+
+        if header_row is None:
+            print(f"    [!] 헤더 행을 찾을 수 없음")
+            return 0
+
+        read_kwargs["header"] = header_row
+        df = pd.read_excel(excel_path, **read_kwargs)
+        df.columns = df.columns.str.strip()
+    except Exception as e:
+        print(f"    [!] Excel 읽기 실패: {e}")
+        return 0
+
+    col_rank   = next((c for c in df.columns if "순위" in str(c)), None)
+    col_amount = next((c for c in df.columns if "투찰금액" in str(c)), None)
+    col_rate   = next((c for c in df.columns if "투찰율" in str(c)), None)
+
+    if not all([col_rank, col_amount, col_rate]):
+        print(f"    [!] 필수 컬럼 없음: {df.columns.tolist()}")
+        return 0
+
+    inserted = 0
+    async with AsyncSessionLocal() as session:
+        for _, row in df.iterrows():
+            try:
+                rank = int(float(str(row[col_rank]).replace(",", "").strip()))
+                amount = int(float(str(row[col_amount]).replace(",", "").strip()))
+                rate_raw = float(str(row[col_rate]).replace(",", "").strip())
+                # 투찰율이 100% 단위면 소수로 변환
+                bid_rate = Decimal(str(rate_raw / 100 if rate_raw > 1 else rate_raw))
+            except (ValueError, TypeError):
+                continue
+
+            existing = await session.scalar(
+                select(BidParticipants).where(
+                    BidParticipants.project_id == project_id,
+                    BidParticipants.rank == rank,
+                )
+            )
+            if existing:
+                continue
+
+            session.add(BidParticipants(
+                project_id = project_id,
+                rank       = rank,
+                bid_amount = amount,
+                bid_rate   = bid_rate,
+                is_winner  = (rank == 1),
+            ))
+            inserted += 1
+
+        await session.commit()
+
+    return inserted
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 
-async def run(type_name: str, start_ym: str, end_ym: str) -> None:
+async def run(
+    start_date: str, end_date: str, license_type: str,
+    user_id: str, password: str, headless: bool,
+) -> None:
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     done = load_done()
     print(f"이미 완료: {len(done)}건")
-    print(f"저장 경로: {DOWNLOAD_DIR}")
 
     async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.connect_over_cdp(CDP_URL)
-        except Exception:
-            print("브라우저 연결 실패. Brave를 디버그 포트로 실행했는지 확인하세요:")
-            print('  & "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe" --remote-debugging-port=9222')
+        browser = await pw.chromium.launch(headless=headless)
+        context = await browser.new_context(accept_downloads=True)
+        page    = await context.new_page()
+
+        await login(page, user_id, password)
+
+        links = await search_and_collect_links(page, start_date, end_date, license_type)
+        if not links:
+            print("수집할 공고 없음.")
+            await browser.close()
             return
 
-        # Info21c 탭 찾기
-        page = context = None
-        for ctx in browser.contexts:
-            for p in ctx.pages:
-                if "info21c" in p.url:
-                    page, context = p, ctx
-                    break
-            if page:
-                break
+        total_ok = total_skip = total_err = 0
 
-        if page is None:
-            context = browser.contexts[0]
-            page    = context.pages[0]
-            print(f"  ⚠ Info21c 탭 미감지. 현재 탭 사용: {page.url}")
-
-        print(f"  연결된 탭: {page.url}")
-
-        # 목록 페이지로 복귀하는 함수
-        async def ensure_list_page():
-            for _ in range(10):
-                has_search = await page.locator("#config_from_date").count() > 0
-                if has_search:
-                    return True
+        async def ensure_page():
+            """브라우저/페이지가 죽었으면 재시작해서 새 page 반환."""
+            nonlocal browser, context, page
+            try:
+                await page.title()  # 살아있는지 확인
+                return page
+            except Exception:
+                print("  [브라우저 재시작]")
                 try:
-                    await page.go_back(wait_until="domcontentloaded", timeout=10_000)
-                    await page.wait_for_timeout(500)
+                    await browser.close()
                 except Exception:
-                    break
+                    pass
+                browser = await pw.chromium.launch(headless=headless)
+                context = await browser.new_context(accept_downloads=True)
+                page    = await context.new_page()
+                await login(page, user_id, password)
+                return page
 
-            # 자동으로 못 찾으면 사용자가 직접 이동할 때까지 대기
-            if await page.locator("#config_from_date").count() == 0:
-                print("\n⚠ 날짜 설정 페이지를 찾을 수 없습니다.")
-                print("  브라우저에서 Info21c 낙찰결과 검색 목록 페이지로 직접 이동해 주세요.")
-                print("  (페이지 이동 후 자동으로 계속됩니다...)")
-                while await page.locator("#config_from_date").count() == 0:
-                    await asyncio.sleep(2)
-                print("  → 페이지 감지됨. 계속합니다.")
-            return True
+        for idx, (bidid, url) in enumerate(links, 1):
+            if bidid in done:
+                total_skip += 1
+                continue
 
-        # 시작 전 목록 페이지 확인
-        ok = await ensure_list_page()
-        if not ok:
-            print("⚠ 목록 페이지를 찾을 수 없습니다. 브라우저에서 Info21c 검색 목록 페이지로 이동 후 재실행하세요.")
-            return
+            print(f"\n[{idx}/{len(links)}] {bidid}")
 
-        months = list(iter_months(start_ym, end_ym))
-        print(f"총 {len(months)}개월 처리 예정")
+            try:
+                page = await ensure_page()
 
-        grand_done = grand_skip = 0
-        for i, (start, end) in enumerate(months, 1):
-            print(f"\n진행: {i}/{len(months)}")
-            await ensure_list_page()
-            d, s = await process_month(page, context, start, end, done)
-            grand_done += d
-            grand_skip += s
+                # 1. 상세 페이지 파싱
+                info = await parse_detail(page, url)
 
-        print(f"\n{'='*50}")
-        print(f"완료: {grand_done}건 다운로드 / {grand_skip}건 스킵")
+                if info is None or info.get("skip"):
+                    reason = info.get("reason", "") if info else "파싱실패"
+                    print(f"  -> 스킵: {reason}")
+                    log_result(bidid, "SKIP", reason)
+                    total_skip += 1
+                    continue
+
+                print(f"  bid_type={info['bid_type']}, price_method={info['price_method']}")
+
+                # 2. bids_history DB 업데이트
+                g2b_id = info.get("g2b_notice_id")
+                if g2b_id:
+                    await update_bid_type_and_method(g2b_id, info["bid_type"], info["price_method"])
+
+                # 3. 참여자 Excel 다운로드
+                excel_path = await download_excel(page, context, bidid)
+                if not excel_path:
+                    log_result(bidid, "ERR", "Excel 다운 실패")
+                    total_err += 1
+                    continue
+
+                # 4. DB 적재
+                if g2b_id:
+                    n = await load_participants_to_db(excel_path, g2b_id)
+                    print(f"  -> 참여자 {n}건 적재")
+
+                log_result(bidid, "OK", f"{info['bid_type']} / {info['price_method']}")
+                done.add(bidid)
+                total_ok += 1
+
+            except Exception as e:
+                err_msg = str(e)[:100]
+                print(f"  [!] 오류: {err_msg}")
+                log_result(bidid, "ERR", err_msg)
+                total_err += 1
+
+            try:
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
+
+        try:
+            await browser.close()
+        except Exception:
+            pass
+
+    print(f"\n=== 완료: {total_ok}건 성공 / {total_skip}건 스킵 / {total_err}건 오류 ===")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Info21c 참여자 데이터 수집")
-    parser.add_argument("--type",  required=True, choices=["건축", "조경"], help="공종")
-    parser.add_argument("--start", required=True, help="시작 월 YYYYMM (예: 202301)")
-    parser.add_argument("--end",   required=True, help="종료 월 YYYYMM (예: 202603)")
+    parser.add_argument("--start",    required=True, help="시작일 YYYYMMDD")
+    parser.add_argument("--end",      required=True, help="종료일 YYYYMMDD")
+    parser.add_argument("--type",     choices=["0002", "0023"], required=True,
+                        help="공종: 0002=실내건축, 0023=조경")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--id",       default=DEFAULT_ID)
+    parser.add_argument("--pw",       default=DEFAULT_PW)
     args = parser.parse_args()
 
-    asyncio.run(run(args.type, args.start, args.end))
+    asyncio.run(run(
+        start_date   = args.start,
+        end_date     = args.end,
+        license_type = args.type,
+        user_id      = args.id,
+        password     = args.pw,
+        headless     = args.headless,
+    ))
 
 
 if __name__ == "__main__":
