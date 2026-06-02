@@ -25,9 +25,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import AsyncSessionLocal
-from app.db.models import BidsHistory, BidParticipants
+from app.db.models import BidsHistory, BidLicenseType, BidParticipants
 from app.db.normalize import (
     normalize_project_type,
+    parse_license_types,
     normalize_region,
     normalize_bid_type,
     normalize_price_method,
@@ -244,7 +245,7 @@ def _parse_simple(content: str) -> tuple[list[dict], list[dict]]:
         "발주처": "client_name",
         "발주청코드": "client_id",
         "지역": "region",
-        "공종": "project_type",
+        "공종": "_raw_project_type",
         "입찰방식": "bid_type",
         "기초금액": "base_price",
         "낙찰하한율": "lower_limit_rate",
@@ -260,7 +261,7 @@ def _parse_simple(content: str) -> tuple[list[dict], list[dict]]:
     df.rename(columns=alias, inplace=True)
 
     has_rank = "rank" in df.columns
-    missing = {"project_id", "region", "project_type",
+    missing = {"project_id", "region", "_raw_project_type",
                "base_price", "lower_limit_rate", "adjustment_rate", "participants"} - set(df.columns)
     if missing:
         raise ValueError(f"필수 컬럼 누락: {missing}")
@@ -319,9 +320,13 @@ def _parse_simple(content: str) -> tuple[list[dict], list[dict]]:
                 except Exception:
                     pass
 
-            p_type = normalize_project_type(str(row["project_type"]).strip())
-            if not p_type:
-                errors.append(f"행 {line}: 알 수 없는 공종 '{row['project_type']}'")
+            raw_type = str(row.get("_raw_project_type", "")).strip()
+            # 단순 포맷: 공종 컬럼은 "실내건축" 같은 단일값 → 정규화 후 단일 license type 생성
+            normalized = normalize_project_type(raw_type)
+            license_types = ([{"type_name": normalized, "size": None, "is_mutual": False, "is_primary": True}]
+                             if normalized else [])
+            if not license_types:
+                errors.append(f"행 {line}: 알 수 없는 공종 '{raw_type}'")
                 continue
 
             client_raw = str(row.get("client_name", "")).strip()
@@ -332,7 +337,7 @@ def _parse_simple(content: str) -> tuple[list[dict], list[dict]]:
                 "client_name": client_raw if client_raw else None,
                 "client_id": client_id_raw if client_id_raw else None,
                 "region": normalize_region(str(row["region"]).strip()),
-                "project_type": p_type,
+                "_license_types": license_types,
                 "bid_type": normalize_bid_type(str(row.get("bid_type", "")).strip()),
                 "price_method": normalize_price_method(str(row.get("price_method", "")).strip()),
                 "base_price": base_price,
@@ -355,13 +360,11 @@ def _parse_simple(content: str) -> tuple[list[dict], list[dict]]:
 # 나라장터 원본 포맷 파서
 # ---------------------------------------------------------------------------
 
-def _map_project_type_g2b(val: str) -> str | None:
-    """나라장터 면허업종제한목록에서 공종을 추출·정규화."""
+def _parse_license_types_g2b(val: str) -> list[dict]:
+    """나라장터 면허업종제한목록 원문 → BidLicenseType 레코드 리스트."""
     if not val or val == "nan":
-        return None
-    if "|" in val:
-        return None  # 복수 공종 제외
-    return normalize_project_type(val)
+        return []
+    return parse_license_types(val)
 
 
 def _parse_g2b(notice_bytes: bytes, result_bytes: bytes) -> tuple[list[dict], list[dict]]:
@@ -434,8 +437,8 @@ def _parse_g2b(notice_bytes: bytes, result_bytes: bytes) -> tuple[list[dict], li
             if not (0.95 < adj < 1.05):
                 continue
 
-            p_type = _map_project_type_g2b(str(row.get("면허업종제한목록", "")))
-            if not p_type:
+            license_types = _parse_license_types_g2b(str(row.get("면허업종제한목록", "")))
+            if not license_types:
                 continue
 
             if lower > 1:
@@ -449,7 +452,7 @@ def _parse_g2b(notice_bytes: bytes, result_bytes: bytes) -> tuple[list[dict], li
                 "client_name": str(row.get("수요기관명", "")).strip() or None,
                 "client_id": str(row.get("수요기관코드", "")).strip() or None,
                 "region": normalize_region(str(row.get("현장지역", "")).strip()),
-                "project_type": p_type,
+                "_license_types": license_types,
                 "bid_type": normalize_bid_type(raw_bid_type),
                 "price_method": normalize_price_method(raw_price_method),
                 "base_price": int(base_price),
@@ -477,11 +480,30 @@ async def _bulk_insert(
     async with AsyncSessionLocal() as session:
         b_inserted = b_skipped = 0
         if bids:
-            stmt = pg_insert(BidsHistory).values(bids)
+            # _license_types 키 분리 후 bids_history 삽입
+            license_map: dict[str, list[dict]] = {}
+            bids_only = []
+            for rec in bids:
+                rec = dict(rec)
+                license_map[rec["project_id"]] = rec.pop("_license_types", [])
+                bids_only.append(rec)
+
+            stmt = pg_insert(BidsHistory).values(bids_only)
             stmt = stmt.on_conflict_do_nothing(index_elements=["project_id"])
             res = await session.execute(stmt)
             b_inserted = res.rowcount
             b_skipped = len(bids) - b_inserted
+
+            # bid_license_types 삽입
+            lt_values = [
+                {"project_id": pid, **lt}
+                for pid, lts in license_map.items()
+                for lt in lts
+            ]
+            if lt_values:
+                lt_stmt = pg_insert(BidLicenseType).values(lt_values)
+                lt_stmt = lt_stmt.on_conflict_do_nothing(index_elements=["project_id", "type_name"])
+                await session.execute(lt_stmt)
 
         p_inserted = p_skipped = 0
         if participants:

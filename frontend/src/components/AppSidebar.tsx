@@ -1,4 +1,4 @@
-import { Calculator, BarChart3, Building2, TrendingUp, Database } from "lucide-react";
+import { Calculator, BarChart3, Building2, TrendingUp, Database, Activity } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
@@ -15,6 +15,7 @@ import {
 
 const items = [
   { title: "투찰가 계산", url: "/", icon: Calculator },
+  { title: "분포 분석", url: "/bid-distribution", icon: Activity },
   { title: "데이터 현황", url: "/overview", icon: BarChart3 },
   { title: "발주처 통계", url: "/clients", icon: Building2 },
   { title: "사정률 분포", url: "/distribution", icon: TrendingUp },

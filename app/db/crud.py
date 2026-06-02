@@ -6,16 +6,19 @@ DB 조회/저장 로직 (비동기 SQLAlchemy)
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidsHistory, ClientStatistics
+from app.db.models import BidsHistory, BidLicenseType, ClientStatistics
 
 # Fallback 최소 샘플 수
 MIN_SAMPLE_SIZE = 20
 
 # 통계 대상 입찰방식 (적격심사만 사용)
 TARGET_BID_TYPE = "적격심사"
+
+# 통계 대상 예정가격 결정방식 (복수예비가격만 사용)
+TARGET_PRICE_METHOD = "복수예비가격"
 
 # bucket_id → (min_price, max_price) 매핑 (project_bucket 시드 데이터와 동기화)
 _BUCKET_RANGES: dict[int, tuple[int, int | None]] = {
@@ -39,6 +42,11 @@ def _bucket_filter(bucket_id: int):
 def _bid_type_filter(bid_type: str):
     """입찰방식 필터."""
     return BidsHistory.bid_type == bid_type
+
+
+def _price_method_filter():
+    """예정가격 결정방식 필터 (복수예비가격 고정)."""
+    return BidsHistory.price_method == TARGET_PRICE_METHOD
 
 
 async def get_collected_dates(
@@ -77,15 +85,18 @@ async def get_rates_by_client(
 
     conditions = [
         client_filter,
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
+        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -104,16 +115,19 @@ async def get_rates_by_region(
     before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     conditions = [
-        BidsHistory.region.like(f"%{region}%"),
-        BidsHistory.project_type == project_type,
+        or_(BidsHistory.region.like(f"%{region}%"), BidsHistory.region == "전국"),
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
+        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -129,15 +143,18 @@ async def get_rates_by_type_and_bucket(
     before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     conditions = [
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
+        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
 
@@ -152,13 +169,16 @@ async def get_all_rates(
     before_date가 있으면 해당 날짜 이전 데이터만 조회 (백테스트용).
     """
     conditions = [
-        BidsHistory.project_type == project_type,
+        BidLicenseType.type_name == project_type,
         _bid_type_filter(bid_type),
+        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
 
     result = await db.execute(
-        select(BidsHistory.adjustment_rate).where(*conditions)
+        select(BidsHistory.adjustment_rate)
+        .join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
+        .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]

@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.models import BidsHistory
+from app.db.models import BidsHistory, BidLicenseType
 from app.db.session import get_db
 from app.engine.statistics import trimmed_median, mad
 from app.jobs.backfill_state import state as backfill_state
@@ -164,10 +164,12 @@ async def get_overview(db: AsyncSession = Depends(get_db)):
     latest   = (await db.execute(select(func.max(BidsHistory.bid_date)))).scalar_one()
 
     rows = (await db.execute(
-        select(BidsHistory.project_type, func.count().label("cnt"))
-        .group_by(BidsHistory.project_type)
+        select(BidLicenseType.type_name, func.count(BidLicenseType.id).label("cnt"))
+        .join(BidsHistory, BidLicenseType.project_id == BidsHistory.project_id)
+        .group_by(BidLicenseType.type_name)
+        .order_by(func.count(BidLicenseType.id).desc())
     )).all()
-    by_type = {r.project_type: r.cnt for r in rows}
+    by_type = {r.type_name: r.cnt for r in rows}
 
     return OverviewResponse(
         total_records=total,
@@ -196,7 +198,7 @@ async def get_client_stats(
         .limit(limit)
     )
     if project_type:
-        q = q.where(BidsHistory.project_type == project_type)
+        q = q.join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id).where(BidLicenseType.type_name == project_type)
 
     rows = (await db.execute(q)).all()
     return [
@@ -226,7 +228,7 @@ async def get_region_stats(
         .order_by(func.count().desc())
     )
     if project_type:
-        q = q.where(BidsHistory.project_type == project_type)
+        q = q.join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id).where(BidLicenseType.type_name == project_type)
 
     rows = (await db.execute(q)).all()
     return [
@@ -248,7 +250,7 @@ async def get_distribution(
     """사정률 분포 히스토그램 데이터."""
     q = select(BidsHistory.adjustment_rate)
     if project_type:
-        q = q.where(BidsHistory.project_type == project_type)
+        q = q.join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id).where(BidLicenseType.type_name == project_type)
 
     rows = (await db.execute(q)).scalars().all()
     values = [float(r) for r in rows]

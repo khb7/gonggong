@@ -30,7 +30,8 @@ import pandas as pd
 from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal
-from app.db.models import BidsHistory
+from app.db.models import BidsHistory, BidLicenseType
+from app.db.normalize import parse_license_types
 
 
 def normalize_region(raw: str) -> str:
@@ -40,23 +41,7 @@ def normalize_region(raw: str) -> str:
     return str(raw).strip()
 
 
-# ── 공종 정규화 ───────────────────────────────────────────────────────────────
-def normalize_project_type(raw: str) -> str | None:
-    """
-    '건축,토건', '조경(식재.시설물)[대](주력:조경식재)' 등 Info21c 업종 컬럼 값
-    → '건축' / '조경'
-    복합 공종('|' 구분) 또는 매핑 없는 코드 → None (필터링)
-    """
-    if not raw or pd.isna(raw):
-        return None
-    raw = str(raw)
-    if "|" in raw:
-        return None  # 복수 공종 제외
-    if "조경" in raw:
-        return "조경"
-    if "건축" in raw or "토건" in raw:
-        return "건축"
-    return None
+# normalize.py의 parse_license_types 사용 (위에서 import됨)
 
 
 # ── 낙찰방법 정규화 ───────────────────────────────────────────────────────────
@@ -184,9 +169,9 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 err_value += 1
                 continue
 
-            # 공종 정규화
-            project_type = normalize_project_type(row.get("면허업종제한목록", ""))
-            if not project_type:
+            # 공종 파싱 → 빈 리스트면 제외
+            license_types = parse_license_types(row.get("면허업종제한목록", ""))
+            if not license_types:
                 err_type += 1
                 continue
 
@@ -237,7 +222,7 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 "client_name":      str(row.get("수요기관", "")).strip() or None,
                 "client_id":        str(row.get("수요기관사업자등록번호", "")).strip() or None,
                 "region":           normalize_region(row.get("수요기관지역", "")),
-                "project_type":     project_type,
+                "_license_types":   license_types,
                 "bid_type":         normalize_bid_type(row.get("낙찰방법", "")),
                 "price_method":     price_method,
                 "base_price":       base_price,
@@ -288,16 +273,15 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                     existing.client_name      = row["client_name"]
                     existing.client_id        = row["client_id"]
                     existing.region           = row["region"]
-                    existing.project_type     = row["project_type"]
                     existing.bid_type         = row["bid_type"]
-                    existing.price_method     = row["price_method"]   # 추가
+                    existing.price_method     = row["price_method"]
                     existing.base_price       = row["base_price"]
                     existing.lower_limit_rate = row["lower_limit_rate"]
                     existing.adjustment_rate  = row["adjustment_rate"]
                     existing.winner_price     = row["winner_price"]
                     existing.participants     = row["participants"]
                     existing.bid_date         = row["bid_date"]
-                    existing.g2b_code         = row["g2b_code"]       # 추가
+                    existing.g2b_code         = row["g2b_code"]
                     updated += 1
                 else:
                     updated += 1  # skipped count
@@ -308,17 +292,27 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                 client_name      = row["client_name"],
                 client_id        = row["client_id"],
                 region           = row["region"],
-                project_type     = row["project_type"],
                 bid_type         = row["bid_type"],
-                price_method     = row["price_method"],   # 추가
+                price_method     = row["price_method"],
                 base_price       = row["base_price"],
                 lower_limit_rate = row["lower_limit_rate"],
                 adjustment_rate  = row["adjustment_rate"],
                 winner_price     = row["winner_price"],
                 participants     = row["participants"],
                 bid_date         = row["bid_date"],
-                g2b_code         = row["g2b_code"],       # 추가
+                g2b_code         = row["g2b_code"],
             ))
+
+            # bid_license_types 삽입 (신규 공고만)
+            for lt in row.get("_license_types", []):
+                session.add(BidLicenseType(
+                    project_id = row["project_id"],
+                    type_name  = lt["type_name"],
+                    size       = lt["size"],
+                    is_mutual  = lt["is_mutual"],
+                    is_primary = lt["is_primary"],
+                ))
+
             inserted += 1
 
             if (inserted + updated) % 500 == 0:
