@@ -8,50 +8,28 @@ Info21c 참여자 XLS → bid_participants DB 적재.
 
 XLS 레이아웃 (공고명 타입):
   공통 헤더:
-    행1: 공고명
-    행3: 공고번호(col3), 발주기관(col8)   [COM 1-based]
-    행5: 예정가격/추정가격(col3), 낙찰하한율(col9)
+    행1(0-based row0): 공고명
+    행3(row2): 공고번호(col2), 발주기관(col7)
+    행5(row4): 예정가격/추정가격(col2), 낙찰하한율(col8)
 
   데이터 섹션 (구형 7열 / 신형 12열):
-    '순위' 헤더 다음 행부터 rank가 숫자인 행이 참여자 데이터
-    7열: rank(1), company_num(2), -(3), company_name(4), -(5), rep(6), bid_amount(7)
-    12열: 위에 + bid_rate%(9), base_rate%(10), vs_lower%(11)
+    rank=1 시작 행이 데이터 시작
+    7열:  rank(0), company_num(1), -(2), company_name(3), -(4), rep(5), bid_amount(6)
+    12열: 위에 + bid_rate%(8), base_rate%(9), vs_lower%(10)
 """
 
 import argparse
 import re
-import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import asyncpg
 import asyncio
+import olefile
+import xlrd
 
 DATABASE_URL = "postgresql://postgres@localhost:5432/gonggong"
 DEFAULT_DIR  = Path("G:/내 드라이브/gonggong/participants")
-
-
-# ── 단일 Excel 인스턴스 (파일마다 열고 닫지 않음) ─────────────────────────────
-
-_xl = None
-
-def get_xl():
-    global _xl
-    if _xl is None:
-        import win32com.client
-        _xl = win32com.client.Dispatch("Excel.Application")
-        _xl.Visible = False
-        _xl.DisplayAlerts = False
-    return _xl
-
-def quit_xl():
-    global _xl
-    if _xl is not None:
-        try:
-            _xl.Quit()
-        except Exception:
-            pass
-        _xl = None
 
 
 # ── 변환 헬퍼 ─────────────────────────────────────────────────────────────────
@@ -83,63 +61,79 @@ def _clean_rate(val) -> Decimal | None:
 
 # ── XLS 파싱 ──────────────────────────────────────────────────────────────────
 
+def _open_xls(path: Path):
+    """olefile로 OLE 스트림 추출 후 xlrd에 전달 (손상 파일 대응)."""
+    ole = olefile.OleFileIO(str(path))
+    data = ole.openstream('Workbook').read()
+    ole.close()
+    return xlrd.open_workbook(file_contents=data)
+
+
 def parse_xls(path: Path) -> dict | None:
     """
-    XLS 파일 파싱. win32com(Excel COM) 사용.
+    XLS 파일 파싱. olefile + xlrd 사용 (win32com 대비 ~200배 빠름).
     반환: {project_id, participants: [{rank, bid_amount, bid_rate, base_rate, vs_lower_limit, is_winner}]}
     실패 시 None.
     """
-    xl = get_xl()
     try:
-        wb = xl.Workbooks.Open(str(path.absolute()))
+        wb = _open_xls(path)
     except Exception:
         return None
 
     try:
-        ws = wb.Worksheets(1)
-        nrows = ws.UsedRange.Rows.Count
-        ncols = ws.UsedRange.Columns.Count
+        ws = wb.sheet_by_index(0)
+        nrows = ws.nrows
 
-        # 레이아웃 확인
-        layout = ws.Cells(1, 1).Value
-        if layout != "공고명":
-            return None
-
-        # project_id (COM 1-based: 행3, 열3)
-        project_id = str(ws.Cells(3, 3).Value or "").strip()
+        # project_id (0-based: 행2, 열2)
+        project_id = str(ws.cell_value(2, 2) or "").strip()
         if not project_id:
             return None
 
-        # 데이터 섹션 찾기: 마지막 '순위' 헤더 다음 행부터
-        last_header_row = None
-        for i in range(1, nrows + 1):
-            if ws.Cells(i, 1).Value == "순위":
-                last_header_row = i
+        # 데이터 섹션 찾기: rank=1로 시작하는 마지막 연속 구간
+        # col 0이 1.0인 행을 찾고, 그 다음 행이 2.0인지 확인
+        data_start = None
+        for i in range(nrows - 1):
+            v = ws.cell_value(i, 0)
+            try:
+                if int(float(v)) == 1 and int(float(ws.cell_value(i + 1, 0))) == 2:
+                    data_start = i
+            except (ValueError, TypeError):
+                continue
 
-        if last_header_row is None:
+        if data_start is None:
             return None
 
-        data_start = last_header_row + 1
-
         participants = []
-        for i in range(data_start, nrows + 1):
-            # rank: col1이 양수 정수인 행만
-            raw_rank = ws.Cells(i, 1).Value
+        for i in range(data_start, nrows):
+            raw_rank = ws.cell_value(i, 0)
             try:
                 rank = int(float(raw_rank))
             except (ValueError, TypeError):
-                continue
+                break
             if rank <= 0:
-                continue
+                break
 
-            bid_amount = _clean_money(ws.Cells(i, 7).Value)
+            bid_amount = _clean_money(ws.cell_value(i, 6))
             if bid_amount is None:
                 continue
 
             # 신형(12열)은 투찰율% 있음, 구형(7열)은 None
-            bid_rate  = _clean_rate(ws.Cells(i, 9).Value)
-            base_rate = _clean_rate(ws.Cells(i, 10).Value)
-            vs_ll     = _clean_rate(ws.Cells(i, 11).Value)
+            bid_rate  = _clean_rate(ws.cell_value(i, 8))
+            base_rate = _clean_rate(ws.cell_value(i, 9))
+            vs_ll     = _clean_rate(ws.cell_value(i, 10))
+
+            # bid_rate / base_rate: 정상 범위 0.1~9.9 (10%~990%), 벗어나면 None
+            if bid_rate is not None and not (Decimal("0.1") <= bid_rate <= Decimal("9.9")):
+                bid_rate = None
+            if base_rate is not None and not (Decimal("0.1") <= base_rate <= Decimal("9.9")):
+                base_rate = None
+            # vs_lower_limit: 음수 허용, Numeric(10,6) 오버플로만 방어
+            if vs_ll is not None and (vs_ll < Decimal("-99") or vs_ll > Decimal("99")):
+                vs_ll = None
+
+            # bid_rate NOT NULL 제약 — 없으면 행 스킵
+            if bid_rate is None:
+                continue
 
             participants.append({
                 "rank":           rank,
@@ -157,11 +151,6 @@ def parse_xls(path: Path) -> dict | None:
 
     except Exception:
         return None
-    finally:
-        try:
-            wb.Close(False)
-        except Exception:
-            pass
 
 
 # ── DB 적재 ───────────────────────────────────────────────────────────────────
@@ -219,7 +208,12 @@ async def run(xls_dir: Path, dry_run: bool) -> None:
                      p["base_rate"], p["vs_lower_limit"], p["is_winner"])
                     for p in data["participants"]
                 ]
-                await conn.executemany(INSERT_SQL, rows)
+                try:
+                    await conn.executemany(INSERT_SQL, rows)
+                except Exception as e:
+                    print(f"[{i}/{len(files)}] DB ERR  {pid}: {e}")
+                    fail += 1
+                    continue
                 existing.add(pid)
                 ok += 1
                 if ok <= 20 or ok % 50 == 0:
@@ -227,7 +221,6 @@ async def run(xls_dir: Path, dry_run: bool) -> None:
                     print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
 
     finally:
-        quit_xl()
         if conn:
             await conn.close()
 
