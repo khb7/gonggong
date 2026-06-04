@@ -129,6 +129,12 @@ class BidParticipants(Base):
     bid_rate: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), nullable=False, comment="투찰율 = 투찰금액 / 예정가격"
     )
+    base_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 6), nullable=True, comment="기초대비율 = 투찰금액 / 기초금액"
+    )
+    vs_lower_limit: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 6), nullable=True, comment="예비가격대비율 (낙찰하한율 기준 차이, %p)"
+    )
     is_winner: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, comment="낙찰자 여부 (rank=1)"
     )

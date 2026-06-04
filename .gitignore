@@ -14,9 +14,12 @@ logs/
 githubtocken.txt
 ssh-key-2026-04-12.key.pub
 
-# Data files
-data/downloads/
-data/participants/
-data/*.csv
-data/*.md
-data/*.db
+# Claude / IDE 자동 생성
+.claude/settings.local.json
+.playwright-mcp/
+
+# 서버 로그
+uvicorn.log
+
+# 데이터 파일 (대용량, 로컬 전용)
+data/
