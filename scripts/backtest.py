@@ -38,7 +38,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from scipy.stats import ks_2samp
 from sqlalchemy import func, select
 
-from app.db.models import BidsHistory, BidLicenseType, ProjectBucket
+from app.db.models import BidsHistory, BidLicenseType, BidParticipants, ProjectBucket
 from app.db.session import AsyncSessionLocal
 from app.data.fallback import get_rates_with_fallback
 from app.engine.statistics import trimmed_median, mad
@@ -101,6 +101,15 @@ async def run_backtest(since: date, until: date | None = None) -> list[dict]:
         label = f"{since} ~ {until}" if until else f"{since} 이후"
         print(f"검증셋: {len(rows)}건 ({label})")
 
+        # 검증셋 프로젝트의 실제 낙찰자 bid_amount 벌크 조회
+        project_ids = [r.BidsHistory.project_id for r in rows]
+        winner_rows = (await db.execute(
+            select(BidParticipants.project_id, BidParticipants.bid_amount)
+            .where(BidParticipants.project_id.in_(project_ids))
+            .where(BidParticipants.is_winner == True)
+        )).all()
+        winner_bid_map: dict[str, int] = {r.project_id: r.bid_amount for r in winner_rows}
+
         for i, row in enumerate(rows, 1):
             if i % 500 == 0:
                 print(f"  처리 중... {i}/{len(rows)}")
@@ -136,12 +145,12 @@ async def run_backtest(since: date, until: date | None = None) -> list[dict]:
                 offset=Decimal("0"),
             )
 
-            # 실제 전략 투찰가 (offset=-MAD, aggressive): 실전 시뮬레이션
+            # 실제 전략 투찰가 (offset=+MAD, aggressive): 실전 시뮬레이션
             calc_agg = calculate_single(
                 base_price=bid.base_price,
                 lower_limit_rate=bid.lower_limit_rate,
                 predicted_rate=predicted_rate,
-                offset=-mad_val,
+                offset=mad_val,
             )
 
             actual_rate = float(bid.adjustment_rate)
@@ -156,6 +165,12 @@ async def run_backtest(since: date, until: date | None = None) -> list[dict]:
             # 실패 원인 분해 (전략 기준)
             too_low_agg  = agg_price < lower_bound   # 하한선 이탈
             too_high_agg = agg_price > est_price      # 예정가격 초과
+
+            # 실제 낙찰자 대비 시뮬레이션 낙찰 여부
+            winner_bid_amt = winner_bid_map.get(bid.project_id)
+            simulated_win = bool(
+                winner_bid_amt and lower_bound <= agg_price <= winner_bid_amt
+            )
 
             # 오차 지표
             pred_f = float(predicted_rate)
@@ -180,11 +195,13 @@ async def run_backtest(since: date, until: date | None = None) -> list[dict]:
                 # 중립 투찰 (offset=0)
                 "neutral_price":    neutral_price,
                 "in_range_neutral": in_range_neutral,
-                # 실전 전략 (offset=-MAD)
+                # 실전 전략 (offset=+MAD)
                 "agg_price":        agg_price,
                 "in_range_agg":     in_range_agg,
                 "too_low_agg":      too_low_agg,
                 "too_high_agg":     too_high_agg,
+                "simulated_win":    simulated_win,
+                "has_participant_data": winner_bid_amt is not None,
                 "lower_limit_rate":  float(bid.lower_limit_rate),
                 "est_price":        est_price,
                 "lower_bound":      lower_bound,
@@ -523,6 +540,12 @@ def _section_stats(rows: list[dict]) -> dict:
     fallback_dist    = Counter(r["fallback_level"] for r in rows)
     top5 = sorted(rows, key=lambda r: r["rate_error"], reverse=True)[:5]
 
+    # 참여자 데이터 기반 시뮬레이션 낙찰율
+    rows_with_data = [r for r in rows if r.get("has_participant_data")]
+    simulated_win_cnt  = sum(1 for r in rows_with_data if r["simulated_win"])
+    simulated_win_rate = round(simulated_win_cnt / len(rows_with_data) * 100, 1) if rows_with_data else None
+    participant_coverage = round(len(rows_with_data) / total * 100, 1)
+
     # actual_rate 기술 통계
     actual_mean = sum(actuals) / total
     actual_std  = (sum((x - actual_mean) ** 2 for x in actuals) / total) ** 0.5
@@ -590,6 +613,9 @@ def _section_stats(rows: list[dict]) -> dict:
         "in_range_agg":     round(in_range_agg / total * 100, 1),
         "too_low_pct":      round(too_low_cnt / total * 100, 1),
         "too_high_pct":     round(too_high_cnt / total * 100, 1),
+        # 시뮬레이션 낙찰율 (참여자 데이터 보유 건 기준)
+        "simulated_win_rate":    simulated_win_rate,
+        "participant_coverage":  participant_coverage,
         # 데이터 특성
         "actual_mean":      round(actual_mean, 6),
         "actual_std":       round(actual_std, 6),
@@ -749,9 +775,11 @@ def _stats_tables(stats: dict) -> list[str]:
         "| 지표 | 값 |",
         "|------|----|",
         f"| 중립 진입율 (offset=0) | {stats['in_range_neutral']}% |",
-        f"| 전략 진입율 (offset=-MAD) | {stats['in_range_agg']}% |",
+        f"| 전략 진입율 (offset=+MAD) | {stats['in_range_agg']}% |",
         f"| 하한선 이탈 (too low) | {stats['too_low_pct']}% |",
         f"| 예정가 초과 (too high) | {stats['too_high_pct']}% |",
+        f"| **시뮬레이션 낙찰율** | **{stats['simulated_win_rate']}%** (참여자 데이터 {stats['participant_coverage']}% 커버) |"
+        if stats['simulated_win_rate'] is not None else "",
         "",
         "**데이터 특성**",
         "",
@@ -784,7 +812,7 @@ def _sweep_md_section(sweep: list[dict]) -> list[str]:
         "|--------|--------|---------|---------|",
     ]
     for row in sweep:
-        marker = " ◀ 현재" if row["multiplier"] == -1.0 else (
+        marker = " ◀ 현재" if row["multiplier"] == 1.0 else (
                  " ★ 최적" if row["multiplier"] == best["multiplier"] and row["multiplier"] != -1.0 else "")
         lines.append(
             f"| {row['label']}{marker} | **{row['hit_rate']}%** | "
@@ -794,7 +822,7 @@ def _sweep_md_section(sweep: list[dict]) -> list[str]:
         "",
         f"- **최적 offset**: {best['label']} (진입율 {best['hit_rate']}%)",
     ]
-    current = next(r for r in sweep if r["multiplier"] == -1.0)
+    current = next(r for r in sweep if r["multiplier"] == 1.0)
     diff = best["hit_rate"] - current["hit_rate"]
     if diff > 2:
         lines.append(
@@ -1155,13 +1183,15 @@ async def main() -> None:
     print(f"중립 진입율       : {overall['in_range_neutral']:.1f}%  (offset=0)")
     print(f"전략 진입율       : {overall['in_range_agg']:.1f}%  (offset=-MAD)")
     print(f"too_low / too_high: {overall['too_low_pct']:.1f}% / {overall['too_high_pct']:.1f}%")
+    if overall["simulated_win_rate"] is not None:
+        print(f"시뮬레이션 낙찰율  : {overall['simulated_win_rate']:.1f}%  (참여자 데이터 {overall['participant_coverage']:.1f}% 커버)")
     print(f"── 데이터 특성 ────────────────────────────")
     print(f"실제 사정률 평균  : {overall['actual_mean']:.6f} ± {overall['actual_std']:.6f}")
     print(f"샘플 수 중간값    : {overall['n_samples_median']}건  (범위: {overall['n_samples_min']}~{overall['n_samples_max']})")
     print(f"── Offset Sweep ───────────────────────────")
     best_sweep = max(sweep, key=lambda x: x["hit_rate"])
     for row in sweep:
-        marker = "◀현재" if row["multiplier"] == -1.0 else ("★최적" if row["multiplier"] == best_sweep["multiplier"] and row["multiplier"] != -1.0 else "")
+        marker = "◀현재" if row["multiplier"] == 1.0 else ("★최적" if row["multiplier"] == best_sweep["multiplier"] and row["multiplier"] != 1.0 else "")
         print(f"  {row['label']:<12}: {row['hit_rate']:5.1f}%  too_low={row['too_low_pct']}%  {marker}")
     print(f"── KS test (분포 이동) ────────────────────────────")
     ks_overall = ks_results.get("overall")
