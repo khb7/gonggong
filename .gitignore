@@ -13,3 +13,10 @@ logs/
 *.pem
 githubtocken.txt
 ssh-key-2026-04-12.key.pub
+
+# Data files
+data/downloads/
+data/participants/
+data/*.csv
+data/*.md
+data/*.db
