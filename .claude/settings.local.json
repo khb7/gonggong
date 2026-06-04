@@ -65,7 +65,10 @@
       "Bash(npm install *)",
       "Bash(task-master --version)",
       "Bash(npx task-master-ai *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(Test-Path *)",
+      "Bash(chcp 65001)",
+      "PowerShell(Start-Process \"C:\\\\Program Files\\\\BraveSoftware\\\\Brave-Browser\\\\Application\\\\brave.exe\" -ArgumentList \"--remote-debugging-port=9222\")"
     ]
   }
 }
