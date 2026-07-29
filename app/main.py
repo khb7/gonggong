@@ -61,12 +61,33 @@ async def health_check():
 
 # 정적 파일 서빙 (프론트엔드 빌드 결과물)
 DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+
+
+def _resolve_within(root: Path, relative: str) -> Path | None:
+    """root 안에 실제로 존재하는 파일이면 그 절대경로를, 아니면 None 을 돌려준다.
+
+    pathlib 의 `/` 는 `..` 를 접지 않고, 우변이 절대경로면 좌변을 통째로 버린다.
+    `.is_file()` 은 그렇게 만들어진 경로를 OS 에 그대로 물어보므로 검사 없이
+    쓰면 root 밖 임의 파일이 서빙된다. resolve() 로 `..` 와 심볼릭 링크를 모두
+    편 뒤 root 안에 있는지 확인한다.
+    """
+    root_resolved = root.resolve()
+    try:
+        candidate = (root_resolved / relative).resolve()
+    except (OSError, ValueError):  # 널 바이트, 경로 길이 초과 등
+        return None
+    if not candidate.is_relative_to(root_resolved):
+        return None
+    return candidate if candidate.is_file() else None
+
+
 if DIST_DIR.exists():
     app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        file_path = DIST_DIR / full_path
-        if file_path.is_file():
-            return FileResponse(file_path)
+        target = _resolve_within(DIST_DIR, full_path)
+        if target is not None:
+            return FileResponse(target)
+        # 나머지는 전부 클라이언트 라우팅으로 넘긴다.
         return FileResponse(DIST_DIR / "index.html")
