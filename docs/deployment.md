@@ -1,14 +1,21 @@
 # 배포 및 서버 확인 가이드
 
-*마지막 실측: 2026-08-24 (SSH 로 직접 확인)*
+*마지막 실측: 2026-08-25*
 
 오라클 클라우드 VM(Ubuntu 22.04) 한 대에서 FastAPI 백엔드가 systemd 서비스로 돌아간다.
 `app/main.py` 가 `frontend/dist` 를 정적 서빙하므로 프로세스는 uvicorn 하나뿐이다.
 
-> **중요: 서비스는 인터넷에 직접 노출돼 있지 않다.**
-> uvicorn 은 `127.0.0.1:8000` 에만 바인딩되고 방화벽이 8000 을 막는다.
-> 같은 서버의 nginx 는 별개 프로젝트(`fp-desk.com`)용이며 **gonggong 으로 가는 프록시 블록은 없다.**
-> 따라서 확인하려면 **SSH 터널**을 써야 한다. `http://140.245.76.153:8000` 은 열리지 않는다.
+공개 주소는 **https://bid.fp-desk.com** 이고, 경로는 이렇게 이어진다.
+
+```
+브라우저 → Cloudflare(프록시) → nginx(443) → 127.0.0.1:8000 uvicorn
+```
+
+uvicorn 은 `127.0.0.1:8000` 에만 바인딩되고 방화벽이 8000 을 막는다.
+방화벽은 80/443 도 **Cloudflare 대역에서 오는 요청만** 허용하므로(`~/harden-origin.sh` 의 `CLOUDFLARE` 체인),
+DNS 레코드의 프록시(주황 구름)를 끄면 사이트가 통째로 닫힌다.
+
+서버 내부를 직접 볼 때는 여전히 SSH 터널을 쓴다(3절).
 
 ---
 
@@ -16,11 +23,14 @@
 
 | 항목 | 값 |
 |------|-----|
+| 공개 주소 | `https://bid.fp-desk.com` (Cloudflare 프록시 → nginx → uvicorn) |
 | 서버 | `ubuntu@140.245.76.153` (Ubuntu 22.04, OpenSSH 8.9) |
 | SSH 키 | `C:\Users\onebe\gonggong\ssh-key-2026-04-12.key` (실제 내용은 ed25519 `onebe-oci-20260722`, `~/.ssh/oci_key` 와 동일 파일) |
 | 코드 경로 | `~/gonggong` |
 | 서비스 | `gonggong.service` (systemd) |
-| 바인딩 | `127.0.0.1:8000` — 외부 접근 불가 |
+| 바인딩 | `127.0.0.1:8000` — 외부 직접 접근 불가, nginx 프록시 경유 |
+| nginx 설정 | `/etc/nginx/sites-available/gonggong` |
+| 인증서 | `bid.fp-desk.com` (certbot webroot, 만료 2026-11-23) |
 | DB | SQLite — `~/gonggong/data/gonggong.db` |
 | git remote | `https://github.com/khb7/gonggong.git` |
 | sudo | 비밀번호 없이 사용 가능 (`sudo -n` 통과) |
@@ -38,7 +48,11 @@ ssh -i "C:\Users\onebe\gonggong\ssh-key-2026-04-12.key" -o StrictHostKeyChecking
 
 ---
 
-## 2. 브라우저로 확인하기 (SSH 터널)
+## 2. 브라우저로 확인하기
+
+공개 주소로 그냥 열면 된다 — https://bid.fp-desk.com
+
+서버 내부를 직접 봐야 할 때(nginx 를 건너뛰고 오리진만 확인)는 SSH 터널을 쓴다.
 
 ```bash
 # 로컬에서 터널 열기 (백그라운드)
@@ -154,3 +168,34 @@ ReadWritePaths=/home/ubuntu/gonggong
 uvicorn app.main:app --reload          # 백엔드 :8000
 cd frontend && npm run dev             # 프론트 :5173 (CORS 허용됨)
 ```
+
+---
+
+## 8. 도메인 / HTTPS 구성 (2026-08-25 구축)
+
+`bid.fp-desk.com` 은 fp-desk.com 존의 서브도메인이다. Cloudflare DNS 에 A 레코드
+`bid → 140.245.76.153` 을 **Proxied(주황 구름)** 로 두었다. 회색 구름으로 바꾸면
+방화벽이 Cloudflare 대역만 허용하므로 사이트가 닫힌다.
+
+nginx 설정 사본: `deploy/nginx/bid.fp-desk.com.conf`
+(서버 실제 경로는 `/etc/nginx/sites-available/gonggong`, `sites-enabled` 에 심볼릭 링크)
+
+인증서는 fp-desk 와 같은 certbot webroot 방식으로 받았다.
+
+```bash
+sudo certbot certonly --webroot -w /var/www/certbot -d bid.fp-desk.com
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+클라이언트 실 IP 복원은 `/etc/nginx/conf.d/cloudflare-realip.conf` 가 전역 처리하므로
+사이트 설정에 다시 적지 않는다.
+
+### 새 서브도메인을 붙일 때 순서
+
+인증서를 먼저 받으려 하면 실패한다. 80 블록 → certbot → 443 블록 순서를 지킨다.
+
+1. Cloudflare DNS 에 A 레코드 추가 (Proxied)
+2. nginx 에 80 블록만 올리고 reload — `/.well-known/acme-challenge/` → `/var/www/certbot`
+3. certbot 발급
+4. 443 블록 추가 후 `nginx -t` → reload
