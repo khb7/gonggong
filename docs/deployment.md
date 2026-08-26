@@ -199,3 +199,49 @@ sudo systemctl reload nginx
 2. nginx 에 80 블록만 올리고 reload — `/.well-known/acme-challenge/` → `/var/www/certbot`
 3. certbot 발급
 4. 443 블록 추가 후 `nginx -t` → reload
+
+---
+
+## 9. 일별 데이터 수집 (로컬 PC)
+
+info21c 는 Playwright 로 브라우저를 띄워 로그인하고 Excel 을 받는다. 서버는
+RAM 이 부족하고(956MB 중 여유 472MB) info21c 가 동시 접속을 막으므로,
+**수집은 로컬 PC 에서 돌리고 결과 DB 만 서버로 올린다.**
+
+### 수동 실행
+
+```bash
+python scripts/daily_collect.py                     # 최근 30일 중 빈 날짜
+python scripts/daily_collect.py --days 90           # 최근 90일
+python scripts/daily_collect.py --start 20251224 --end 20260131
+```
+
+아직 참여자 데이터가 없는 날짜만 골라 받으므로, 여러 번 돌려도 중복 수집되지 않는다.
+
+### 작업 스케줄러 등록
+
+PC 를 매일 켜지 않아도 되도록 "놓친 작업 따라잡기"를 쓴다.
+
+1. `작업 스케줄러` 실행 → **작업 만들기** (기본 작업 아님)
+2. **일반** 탭 — 이름 `gonggong 일별 수집`, "사용자가 로그온할 때만 실행" 유지
+3. **트리거** 탭 — 새로 만들기 → 매일 03:00
+4. **동작** 탭 — 새로 만들기
+   - 프로그램: `python`
+   - 인수: `scripts/daily_collect.py --headless`
+   - 시작 위치: `C:\Users\onebe\gonggong`
+5. **설정** 탭 — **"예약된 시작을 놓친 경우 가능한 한 빨리 작업 시작"** 체크 ← 핵심
+6. 확인
+
+이 옵션 덕분에 PC 가 꺼져 있던 날의 작업은 다음에 켤 때 실행되고,
+그때 빈 날짜를 한꺼번에 메운다.
+
+### 첫 실행 주의
+
+마지막 수집이 **2025-12-24** 라 공백이 길다. 한 번에 돌리면 오래 걸리므로
+첫 회는 기간을 나눠 수동으로 돌린 뒤 스케줄러에 맡긴다.
+
+```bash
+python scripts/daily_collect.py --start 20251224 --end 20260131
+python scripts/daily_collect.py --start 20260201 --end 20260331
+# ... 이어서
+```
