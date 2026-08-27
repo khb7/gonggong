@@ -70,15 +70,6 @@ status: pending → in_progress → done / skipped
   - 공고번호 조회 시 A값 공고면 화면에 안내가 뜬다
 - **notes:** T-008(백필) 이 먼저다. 지금 연동해도 대부분 `false` 로 나온다.
 
-### T-013 — 폐기된 설계 문서에 배너 달기
-- **why:** `md/reference/공공입찰.md`, `md/design/bidding_engine_design.md`,
-  `md/plans/bidding-implementation-map.md`, `md/plans/implementation_plan.md` 이
-  전부 사정률 예측 중심 + `87.745% 고정` + `aggressive = -MAD` 로 적혀 있다. 셋 다 이제 틀렸다.
-- **status:** pending
-- **acceptance:**
-  - 각 문서 상단에 "폐기 — 대체 문서" 배너
-- **notes:** 지우지 말고 배너만. 왜 그렇게 설계했었는지가 기록으로 남을 가치가 있다.
-
 ### T-014 — `select_center_offset` 의 safe / aggressive 가 같은 값이다
 - **why:** 음수 offset 은 하한 미달 = 실격이라 `-MAD` 를 `+MAD` 로 정정했는데,
   그 결과 safe 와 aggressive 가 동일해졌다. 하한선 위로 얼마나 띄울지에 대한 전략 차이가 없다.
@@ -98,6 +89,14 @@ status: pending → in_progress → done / skipped
 ---
 
 ## 완료된 태스크
+
+### T-013 — 폐기된 설계 문서에 배너 달기
+- **status:** done (2026-08-27)
+- **notes:** 5개 문서 상단에 배너를 달았다 — `md/reference/공공입찰.md`,
+  `md/design/bidding_engine_design.md`, `md/plans/bidding-implementation-map.md`,
+  `md/plans/implementation_plan.md`, `md/status/progress.md`(오래됨 경고).
+  각 배너에 **그 문서에서 구체적으로 틀린 줄**과 대체 문서를 적었다.
+  지우지 않고 남긴다 — 왜 그렇게 설계했었는지가 기록으로서 가치가 있다.
 
 ### T-002 — 히스토그램 낙찰자 집중 구간 강조 표시
 - **status:** done (2026-08-27)
