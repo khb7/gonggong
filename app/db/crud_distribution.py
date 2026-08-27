@@ -6,7 +6,7 @@ distribution engine용 DB 조회.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BidParticipants, BidsHistory, BidLicenseType
@@ -39,9 +39,45 @@ class DistributionScope:
     bids: int           # 이 레벨의 참여자 행 수
 
 
+# 낙찰자 투찰율이 법정 하한율보다 낮게 계산되는 공고를 걸러내기 위한 허용 오차.
+# 낙찰하한가는 원 단위 절사되므로 미세하게 밑돌 수 있다.
+_INVARIANT_TOLERANCE = Decimal("0.00002")
+
+
+def _trusted_limits_filter():
+    """법정 하한율을 신뢰할 수 있는 공고만 남긴다.
+
+    낙찰자의 투찰율이 법정 하한율보다 낮은 건 물리적으로 불가능하다
+    (하한 미달은 실격이라 낙찰자가 될 수 없다). 그런 공고는 legal_limit_rate
+    가 틀린 것이고, **offset 좌표계 자체가 밀려 있으므로** 히스토그램에
+    넣으면 안 된다.
+
+    실측(12,445 공고 중 위반 261건 = 2.1%)을 제외했을 때:
+
+        낙찰자 offset 음수 비율   A값 0.3% → 0.0%   비A값 18.0% → 0.0%
+        A값/비A값 분포 KS 거리    D=0.149 → D=0.079
+
+    비A값 공고의 꼬리가 p5=-8.0 / p95=+8.2 로 벌어져 있던 것이 이 2.1% 때문이다.
+    A값 유무로 히스토그램을 가를 필요는 없다 — bid_rate 가 이미 A값 조정값이라
+    두 그룹은 같은 축 위에 있다(A값 크기와 낙찰자 offset 사이에 단조 관계 없음).
+    """
+    return ~exists(
+        select(1)
+        .select_from(BidParticipants)
+        .where(
+            BidParticipants.project_id == BidsHistory.project_id,
+            BidParticipants.is_winner.is_(True),
+            BidParticipants.bid_rate
+            < func.coalesce(BidsHistory.legal_limit_rate, BidsHistory.lower_limit_rate)
+            - _INVARIANT_TOLERANCE,
+        )
+        .correlate(BidsHistory)
+    )
+
+
 def _target_filters() -> list:
     """
-    통계 대상 필터 (적격심사 + 복수예비가격).
+    통계 대상 필터 (적격심사 + 복수예비가격 + 하한율 신뢰 가능).
 
     기존 적재분의 bid_type/price_method가 '기타'로 저장되어 있어 함께 허용한다.
     백필 완료 후 '기타' 허용을 제거할 것.
@@ -55,6 +91,7 @@ def _target_filters() -> list:
             BidsHistory.price_method == TARGET_PRICE_METHOD,
             BidsHistory.price_method == "기타",
         ),
+        _trusted_limits_filter(),
     ]
 
 

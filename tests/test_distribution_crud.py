@@ -222,3 +222,55 @@ async def test_client_level_isolates_by_client_name(db):
     assert all(r["bid_rate"] == Decimal("0.880") for r in rows), (
         "다른 발주처 행이 섞였다 — client 레벨이 발주처를 못 가른다"
     )
+
+
+# ──────────────────────────────────────────
+# 4. 하한율 신뢰성 (낙찰자 불변식)
+# ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_offset_rows_exclude_notice_with_impossible_winner(db):
+    """낙찰자가 법정 하한율보다 낮은 공고는 통째로 빠진다.
+
+    하한 미달은 실격이라 낙찰자가 될 수 없다. 그런 공고는 legal_limit_rate 가
+    틀린 것이고, offset 좌표계 자체가 밀려 있어 히스토그램을 오염시킨다.
+
+    실측(12,445 공고 중 261건 = 2.1%)을 제외했을 때
+    낙찰자 offset 음수 비율이 비A값 그룹에서 18.0% → 0.0% 로 떨어졌다.
+    """
+    # 정상 공고 — 낙찰자가 하한율 위
+    await _add_notice(db, "OK1")
+    await _add_participants(db, "OK1", ["0.878", "0.880", "0.885"])
+
+    # 오염 공고 — 낙찰자(rank 1)가 하한율 아래
+    await _add_notice(db, "BAD1")
+    await _add_participants(db, "BAD1", ["0.870", "0.880", "0.885"])
+    await db.commit()
+
+    rows = await get_offset_distribution(db, client_name="테스트발주처")
+    got = {str(r["bid_rate"]) for r in rows}
+
+    assert "0.878000" in got or Decimal("0.878") in {r["bid_rate"] for r in rows}, (
+        "정상 공고가 빠졌다"
+    )
+    assert all(r["bid_rate"] >= LOWER_LIMIT for r in rows if r["is_winner"]), (
+        "하한율 미만 낙찰자가 남았다"
+    )
+    # 오염 공고는 낙찰자뿐 아니라 그 공고의 모든 참여자가 빠져야 한다
+    assert len(rows) == 3, f"오염 공고 행이 남았다 (총 {len(rows)}행)"
+
+
+@pytest.mark.asyncio
+async def test_offset_rows_keep_winner_within_rounding_tolerance(db):
+    """원 단위 절사로 아주 미세하게 밑도는 낙찰자는 살린다.
+
+    낙찰하한가는 원 단위로 절사되므로 투찰율이 법정값을 1e-5 수준으로
+    밑돌 수 있다. 이걸 오염으로 취급하면 정상 공고가 대량으로 빠진다.
+    """
+    await _add_notice(db, "EDGE1")
+    # 0.87744 = 하한율보다 0.00001 낮다 (_INVARIANT_TOLERANCE = 0.00002 이내)
+    await _add_participants(db, "EDGE1", ["0.87744", "0.880"])
+    await db.commit()
+
+    rows = await get_offset_distribution(db, client_name="테스트발주처")
+    assert len(rows) == 2, f"허용 오차 안의 공고가 빠졌다 (총 {len(rows)}행)"
