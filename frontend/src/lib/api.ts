@@ -118,9 +118,21 @@ export function getClients() {
   return request<ClientStat[]>("/api/v1/stats/clients");
 }
 
-export function getDistribution(projectType?: string) {
-  const q = projectType ? `?project_type=${encodeURIComponent(projectType)}` : "";
-  return request<DistributionData>(`/api/v1/stats/distribution${q}`);
+/**
+ * 통계 분포 지표. 두 값은 전혀 다르고 자릿수도 다르다 — 섞으면 안 된다.
+ *
+ *   preprice = 예정가격 / 기초금액   중앙 0.999   ← 사정률. 복수예비가격이 만드는 제도적 난수
+ *   award    = 낙찰가   / 기초금액   중앙 0.883   ← 낙찰률. 하한율 × 사정률에 가깝다
+ */
+export type DistributionMetric = "preprice" | "award";
+
+export function getDistribution(
+  projectType?: string,
+  metric: DistributionMetric = "preprice",
+) {
+  const params = new URLSearchParams({ metric });
+  if (projectType) params.set("project_type", projectType);
+  return request<DistributionData>(`/api/v1/stats/distribution?${params}`);
 }
 
 export interface SchedulerStatus {

@@ -64,7 +64,7 @@ export default function ClientStatistics() {
           <Table>
             <TableHeader>
               <TableRow>
-                {([["client_name", "발주처명"], ["record_count", "낙찰 건수"], ["avg_adjustment_rate", "평균 사정률 (%)"], ["avg_participants", "평균 참여업체"]] as [SortKey, string][]).map(([key, label]) => (
+                {([["client_name", "발주처명"], ["record_count", "낙찰 건수"], ["avg_adjustment_rate", "평균 낙찰률 (%)"], ["avg_participants", "평균 참여업체"]] as [SortKey, string][]).map(([key, label]) => (
                   <TableHead key={key}>
                     <Button variant="ghost" size="sm" onClick={() => toggleSort(key)} className="gap-1">
                       {label} <ArrowUpDown className="h-3 w-3" />
