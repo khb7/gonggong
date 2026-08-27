@@ -88,26 +88,29 @@ def test_select_strategy(participants, expected):
     assert select_strategy(participants) == expected
 
 
-def test_select_center_offset_safe():
-    """safe 전략은 +MAD를 반환해야 한다."""
-    mad_val = Decimal("0.005")
-    assert select_center_offset("safe", mad_val) == Decimal("0.005")
+def test_select_center_offset_is_always_zero():
+    """중심 offset 은 전략·MAD 와 무관하게 0 이다.
 
+    offset 0 = "가정한 사정률에서의 낙찰하한가에 정확히 붙인다".
 
-def test_select_center_offset_normal():
-    """normal 전략은 0을 반환해야 한다."""
-    assert select_center_offset("normal", Decimal("0.005")) == Decimal("0")
+    예전에는 safe/aggressive 가 +MAD(0.486%p)를 돌려줬다. 유효하기는 하지만
+    이길 자리가 아니다 — 실측 12,010 공고에서 낙찰자는 하한가 위 +0.016%
+    (중앙값)에 붙어 있고, 0.486%p 는 그보다 30배 멀다.
 
-
-def test_select_center_offset_aggressive():
+    위험 조절은 offset 이 아니라 사정률(FIXED_PREPRICE_RATE)로 한다.
+    유효/무효를 가르는 건 `c >= 실제사정률` 이라 offset 을 올리면
+    c 를 올리는 것과 효과가 겹치면서 낙찰선에서만 멀어진다.
     """
-    aggressive 전략은 +MAD를 반환해야 한다.
+    for strategy in ("safe", "normal", "aggressive"):
+        for mad in (Decimal("0"), Decimal("0.005"), Decimal("0.05")):
+            assert select_center_offset(strategy, mad) == Decimal("0"), (
+                f"{strategy} / MAD {mad} 에서 0 이 아니다"
+            )
 
-    offset은 `낙찰하한율 + offset`으로 쓰이므로 음수면 하한가 아래 투찰 =
-    실격이다. 설계 초안의 -MAD는 이 제약을 반영하지 못한 값이었다.
-    """
-    mad_val = Decimal("0.005")
-    assert select_center_offset("aggressive", mad_val) == Decimal("0.005")
+
+def test_center_offset_never_goes_below_the_floor():
+    """음수 offset 은 하한가 미달 = 실격이므로 절대 나오면 안 된다."""
+    assert select_center_offset("aggressive", Decimal("0.05")) >= Decimal("0")
 
 
 def test_select_center_offset_never_negative():
