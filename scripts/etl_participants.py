@@ -19,16 +19,23 @@ XLS 레이아웃 (공고명 타입):
 """
 
 import argparse
+import os
 import re
+import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import asyncpg
 import asyncio
 import olefile
 import xlrd
 
-DATABASE_URL = "postgresql://postgres@localhost:5432/gonggong"
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from sqlalchemy import select
+
+from app.db.session import AsyncSessionLocal
+from app.db.models import BidParticipants
+
 DEFAULT_DIR  = Path("G:/내 드라이브/gonggong/participants")
 
 
@@ -155,33 +162,43 @@ def parse_xls(path: Path) -> dict | None:
 
 # ── DB 적재 ───────────────────────────────────────────────────────────────────
 
-INSERT_SQL = """
-INSERT INTO bid_participants
-    (project_id, rank, bid_amount, bid_rate, base_rate, vs_lower_limit, is_winner)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (project_id, rank) DO NOTHING
-"""
-
-
 async def run(xls_dir: Path, dry_run: bool) -> None:
+    """앱과 동일한 DB(settings.DATABASE_URL → 기본 sqlite)에 적재한다."""
     files = sorted(xls_dir.glob("*.xls"))
     print(f"XLS 파일: {len(files)}개")
 
-    conn = None
     existing: set[str] = set()
 
     if not dry_run:
-        conn = await asyncpg.connect(DATABASE_URL)
-        existing = set(
-            r[0] for r in await conn.fetch("SELECT DISTINCT project_id FROM bid_participants")
-        )
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(BidParticipants.project_id).distinct())
+            existing = {r[0] for r in result.all()}
         print(f"이미 적재된 project_id: {len(existing)}개")
     else:
         print("DRY-RUN 모드 (DB 저장 없음)")
 
     ok = skip = fail = 0
 
-    try:
+    if dry_run:
+        for i, f in enumerate(files, 1):
+            data = parse_xls(f)
+            if data is None:
+                fail += 1
+                if fail <= 10 or fail % 50 == 0:
+                    print(f"[{i}/{len(files)}] FAIL  {f.name}")
+                continue
+            pid = data["project_id"]
+            n = len(data["participants"])
+            if pid in existing:
+                skip += 1
+                continue
+            fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
+            print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
+            ok += 1
+        print(f"\n완료: 성공={ok}, 스킵={skip}, 실패={fail}")
+        return
+
+    async with AsyncSessionLocal() as session:
         for i, f in enumerate(files, 1):
             data = parse_xls(f)
 
@@ -198,31 +215,24 @@ async def run(xls_dir: Path, dry_run: bool) -> None:
                 skip += 1
                 continue
 
-            if dry_run:
-                fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
-                print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
-                ok += 1
-            else:
-                rows = [
-                    (pid, p["rank"], p["bid_amount"], p["bid_rate"],
-                     p["base_rate"], p["vs_lower_limit"], p["is_winner"])
-                    for p in data["participants"]
-                ]
-                try:
-                    await conn.executemany(INSERT_SQL, rows)
-                except Exception as e:
-                    print(f"[{i}/{len(files)}] DB ERR  {pid}: {e}")
-                    fail += 1
-                    continue
-                existing.add(pid)
-                ok += 1
-                if ok <= 20 or ok % 50 == 0:
-                    fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
-                    print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
+            for p in data["participants"]:
+                session.add(BidParticipants(
+                    project_id     = pid,
+                    rank           = p["rank"],
+                    bid_amount     = p["bid_amount"],
+                    bid_rate       = p["bid_rate"],
+                    base_rate      = p["base_rate"],
+                    vs_lower_limit = p["vs_lower_limit"],
+                    is_winner      = p["is_winner"],
+                ))
+            existing.add(pid)
+            ok += 1
 
-    finally:
-        if conn:
-            await conn.close()
+            if ok % 50 == 0:
+                await session.commit()
+                print(f"[{i}/{len(files)}] 커밋... 누적 {ok}개 공고")
+
+        await session.commit()
 
     print(f"\n완료: 성공={ok}, 스킵={skip}, 실패={fail}")
     print(f"bid_participants 총 적재: {ok}개 공고")
