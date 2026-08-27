@@ -49,7 +49,22 @@ def test_has_a_value_tag_false(name):
 
 def test_resolve_legal_rate_snaps_down():
     """실효 하한율 이하의 후보 중 가장 큰 값을 고른다."""
-    assert resolve_legal_limit_rate(Decimal("0.88255")) == Decimal("0.88000")
+    assert resolve_legal_limit_rate(Decimal("0.88255")) == Decimal("0.87745")
+
+
+def test_resolve_legal_rate_does_not_snap_to_service_rate():
+    """공사 공고를 용역 하한율로 오분류하지 않는다.
+
+    후보표를 공사+용역 합집합으로 쓰던 시절, 법정 0.89745 인 공사 공고에
+    A값이 붙으면 실효율이 0.90 을 넘어 용역값 `0.90000` 에 걸렸다.
+    그러면 A값이 21% 과소 산출된다. 공사 표에는 0.89745 위가 없어야 한다.
+    """
+    from app.engine.a_value import LEGAL_LIMIT_RATES_SERVICE
+
+    eff = Decimal("0.90258")  # 법정 0.89745 + A값 5%
+    assert resolve_legal_limit_rate(eff) == Decimal("0.89745")
+    # 용역 표를 명시적으로 넘기면 용역값이 나온다 (분리가 실제로 동작하는지)
+    assert resolve_legal_limit_rate(eff, rates=LEGAL_LIMIT_RATES_SERVICE) == Decimal("0.90000")
 
 
 def test_resolve_legal_rate_exact_match():
@@ -126,9 +141,62 @@ def test_effective_equals_legal_when_no_a_value():
 
 def test_split_limit_rates_with_a_value():
     legal, eff, a = split_limit_rates(328_577_900, 289_985_144, None)
-    assert legal == Decimal("0.88000")
+    assert legal == Decimal("0.87745")
     assert float(eff) == pytest.approx(0.88255, abs=1e-5)
-    assert a == pytest.approx(6_971_600, abs=10)
+    # A = (낙찰하한가 − 예정가격 × r) / (1 − r)
+    #   = (289,985,144 − 328,577,900 × 0.87745) / 0.12255 ≈ 13,663,530  (기초금액 대비 4.16%)
+    assert a == pytest.approx(13_663_530, abs=10)
+
+
+# ── 실측 정답지 회귀 ───────────────────────────────────────────
+
+
+def test_construction_table_matches_declared_a_value():
+    """A값이 원본에 명시된 실측 151건으로 역산기를 검증한다.
+
+    `data/downloads/인포나의투찰성향*.xlsx` 는 A값을 컬럼으로 제공한다.
+    그 A값을 정답으로 두고, 낙찰하한가·예정가격만으로 역산한 결과와 대조한다
+    (시장 데이터에는 A값 컬럼이 없으므로 `declared` 없이 = 동일 조건).
+
+    후보표를 공사+용역 합집합으로 쓰면 법정율 매칭이 30.5% 로 떨어지고
+    A값이 실제의 78.8% 로 과소 산출된다. 공사 표에서는 둘 다 100% 다.
+    """
+    import glob
+    import pandas as pd
+
+    paths = sorted(glob.glob("data/downloads/인포나의투찰성향*.xlsx"))
+    if not paths:
+        pytest.skip("실측 파일 없음 — 로컬 데이터가 있을 때만 도는 회귀 테스트")
+
+    df = pd.concat([pd.read_excel(p, header=1) for p in paths], ignore_index=True)
+
+    def _num(col):
+        return pd.to_numeric(
+            df[col].astype(str).str.replace(",", "", regex=False).str.extract(r"(-?[\d.]+)")[0],
+            errors="coerce",
+        )
+
+    a_true, est, low = _num("A값"), _num("예정가격"), _num("낙찰하한가")
+
+    checked = matched = 0
+    total_true = total_derived = 0
+    for i in range(len(df)):
+        if pd.isna(a_true[i]) or pd.isna(est[i]) or pd.isna(low[i]) or est[i] <= 0:
+            continue
+        checked += 1
+        legal, _eff, a_derived = split_limit_rates(int(est[i]), int(low[i]), None)
+        # 정답 법정율: A값을 알 때의 (낙찰하한가 − A) / (예정가격 − A)
+        r_true = (Decimal(str(low[i])) - Decimal(str(a_true[i]))) / (
+            Decimal(str(est[i])) - Decimal(str(a_true[i]))
+        )
+        if legal is not None and abs(float(legal) - float(r_true)) < 1e-5:
+            matched += 1
+        total_true += a_true[i]
+        total_derived += a_derived
+
+    assert checked >= 100, f"검증 표본이 너무 적다 ({checked}건)"
+    assert matched == checked, f"법정율 오분류 {checked - matched}/{checked}건"
+    assert total_derived == pytest.approx(total_true, rel=1e-4)
 
 
 def test_split_limit_rates_without_lower_limit_price():
