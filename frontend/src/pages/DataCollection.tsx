@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getBackfillStatus, startBackfill, getSchedulerStatus, type BackfillStatus, type SchedulerStatus } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Loader2 } from "lucide-react";
+import { QueryState, SERVER_ERROR_HINT } from "@/components/QueryState";
 import { useToast } from "@/hooks/use-toast";
 
 function defaultDates() {
@@ -20,61 +22,44 @@ function defaultDates() {
 }
 
 export default function DataCollection() {
-  const [status, setStatus] = useState<BackfillStatus | null>(null);
-  const [scheduler, setScheduler] = useState<SchedulerStatus | null>(null);
-  const [loading, setLoading] = useState(true);
   const [startDate, setStartDate] = useState(defaultDates().start);
   const [endDate, setEndDate] = useState(defaultDates().end);
-  const [submitting, setSubmitting] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
+  const queryClient = useQueryClient();
 
-  const fetchStatus = useCallback(() => {
-    getBackfillStatus()
-      .then((d) => {
-        setStatus(d);
-        if (d.is_running && !intervalRef.current) {
-          intervalRef.current = setInterval(() => {
-            getBackfillStatus().then((d2) => {
-              setStatus(d2);
-              if (!d2.is_running && intervalRef.current) {
-                clearInterval(intervalRef.current);
-                intervalRef.current = null;
-              }
-            });
-          }, 3000);
-        }
-        if (!d.is_running && intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
-        }
-      })
-      .catch(() => toast({ title: "오류", description: "서버 연결 실패. 백엔드가 실행 중인지 확인하세요.", variant: "destructive" }))
-      .finally(() => setLoading(false));
-  }, []);
+  // 백필이 도는 동안만 3초 간격으로 다시 조회한다.
+  // 수동 setInterval + ref 정리 대신 refetchInterval 에 맡긴다.
+  const {
+    data: status,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery<BackfillStatus>({
+    queryKey: ["backfill-status"],
+    queryFn: getBackfillStatus,
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.is_running ? 3000 : false),
+  });
 
-  useEffect(() => {
-    fetchStatus();
-    getSchedulerStatus().then(setScheduler).catch(() => {});
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [fetchStatus]);
+  // 스케줄러 정보는 부가 정보다. 실패해도 화면을 막지 않는다.
+  const { data: scheduler } = useQuery<SchedulerStatus>({
+    queryKey: ["scheduler-status"],
+    queryFn: getSchedulerStatus,
+    retry: false,
+  });
 
-  const handleStart = async () => {
-    setSubmitting(true);
-    try {
-      await startBackfill(startDate, endDate);
+  const { mutate: runBackfill, isPending: submitting } = useMutation({
+    mutationFn: () => startBackfill(startDate, endDate),
+    onSuccess: () => {
       toast({ title: "백필을 시작합니다" });
-      fetchStatus();
-    } catch (err: any) {
-      if (err.status === 409) toast({ title: "이미 실행 중입니다", variant: "destructive" });
-      else if (err.status === 400) toast({ title: "오류", description: err.message, variant: "destructive" });
-      else toast({ title: "오류", description: "서버 연결 실패. 백엔드가 실행 중인지 확인하세요.", variant: "destructive" });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (loading) return <div className="flex justify-center py-20"><Loader2 className="animate-spin h-8 w-8 text-primary" /></div>;
+      queryClient.invalidateQueries({ queryKey: ["backfill-status"] });
+    },
+    onError: (err: any) => {
+      if (err?.status === 409) toast({ title: "이미 실행 중입니다", variant: "destructive" });
+      else if (err?.status === 400) toast({ title: "오류", description: err.message, variant: "destructive" });
+      else toast({ title: "오류", description: SERVER_ERROR_HINT, variant: "destructive" });
+    },
+  });
 
   const p = status?.progress;
   const lr = status?.last_run;
@@ -82,6 +67,9 @@ export default function DataCollection() {
   return (
     <div className="space-y-8">
       <h2 className="text-2xl font-bold">데이터 수집</h2>
+
+      <QueryState isLoading={isLoading} error={error} onRetry={() => refetch()}>
+      <div className="space-y-8">
 
       {scheduler && (
         <Card>
@@ -150,13 +138,15 @@ export default function DataCollection() {
                 <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
               </div>
             </div>
-            <Button onClick={handleStart} disabled={submitting || (status?.is_running ?? false)} className="w-full">
+            <Button onClick={() => runBackfill()} disabled={submitting || (status?.is_running ?? false)} className="w-full">
               {submitting ? <Loader2 className="animate-spin mr-2" /> : null}
               백필 시작
             </Button>
           </CardContent>
         </Card>
       </div>
+      </div>
+      </QueryState>
     </div>
   );
 }

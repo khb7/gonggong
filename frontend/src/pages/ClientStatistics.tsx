@@ -1,28 +1,25 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { getClients, type ClientStat } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, ArrowUpDown } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import { ArrowUpDown } from "lucide-react";
+import { QueryState } from "@/components/QueryState";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { Button } from "@/components/ui/button";
 
 type SortKey = "client_name" | "record_count" | "avg_adjustment_rate" | "avg_participants";
 
 export default function ClientStatistics() {
-  const [data, setData] = useState<ClientStat[]>([]);
-  const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("record_count");
   const [sortAsc, setSortAsc] = useState(false);
-  const { toast } = useToast();
 
-  useEffect(() => {
-    getClients()
-      .then(setData)
-      .catch(() => toast({ title: "오류", description: "서버 연결 실패. 백엔드가 실행 중인지 확인하세요.", variant: "destructive" }))
-      .finally(() => setLoading(false));
-  }, []);
+  const { data = [], isLoading, error, refetch } = useQuery<ClientStat[]>({
+    queryKey: ["clients"],
+    queryFn: getClients,
+    retry: false,
+  });
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc(!sortAsc);
@@ -35,13 +32,19 @@ export default function ClientStatistics() {
     return sortAsc ? cmp : -cmp;
   });
 
-  if (loading) return <div className="flex justify-center py-20"><Loader2 className="animate-spin h-8 w-8 text-primary" /></div>;
-
   const top20 = data.slice(0, 20).map((c) => ({ name: c.client_name, count: c.record_count }));
 
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold">발주처 통계</h2>
+      <QueryState
+        isLoading={isLoading}
+        error={error}
+        isEmpty={data.length === 0}
+        emptyMessage="발주처 통계가 아직 없습니다. 데이터를 먼저 수집하세요."
+        onRetry={() => refetch()}
+      >
+      <div className="space-y-6">
       <Card>
         <CardHeader><CardTitle>Top 20 발주처</CardTitle></CardHeader>
         <CardContent>
@@ -83,6 +86,8 @@ export default function ClientStatistics() {
           </Table>
         </CardContent>
       </Card>
+      </div>
+      </QueryState>
     </div>
   );
 }
