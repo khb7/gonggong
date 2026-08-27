@@ -39,11 +39,20 @@ def upgrade() -> None:
 
     # 2. 기존 bids_history.project_type 데이터 → bid_license_types 이관
     #    (is_primary=true, is_mutual=false, size=null)
+    #    저장값이 '건축' 등 원문인 행이 있으므로 normalize_project_type() 과
+    #    동일한 규칙으로 정규화해서 넣는다. 정규화 결과가 없는 값은 원문 유지.
     op.execute("""
-        INSERT OR IGNORE INTO bid_license_types (project_id, type_name, size, is_mutual, is_primary)
-        SELECT project_id, project_type, NULL, 0, 1
+        INSERT INTO bid_license_types (project_id, type_name, size, is_mutual, is_primary)
+        SELECT project_id,
+               CASE
+                   WHEN project_type LIKE '%조경%' THEN '조경'
+                   WHEN project_type LIKE '%건축%' THEN '실내건축'
+                   ELSE project_type
+               END,
+               NULL, false, true
         FROM bids_history
         WHERE project_type IS NOT NULL AND project_type <> ''
+        ON CONFLICT ON CONSTRAINT uq_bid_license_project_type DO NOTHING
     """)
 
     # 3. project_type 컬럼 삭제 (SQLite는 batch 모드 필요)
