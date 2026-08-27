@@ -15,14 +15,30 @@ from app.core.config import settings
 from app.db.crud import TARGET_BID_TYPE
 from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type, normalize_bid_type
-from app.data.fallback import get_rates_with_fallback, LEVEL_NONE
 from app.db.models import ProjectBucket
-from app.engine.statistics import trimmed_median, mad, confidence_range
+from app.engine.statistics import confidence_range
 from app.engine.calculator import calculate_bid_spread
 from app.schemas.request import BidRequest
 from app.schemas.response import BidResponse, FetchedData
 
 router = APIRouter()
+
+# ── 사정률 고정값 ─────────────────────────────────────────────────────────────
+# 사정률은 예측하지 않는다. 복수예비가격 15개 중 4개 추첨의 산술평균이라
+# 제도가 만들어내는 난수에 가깝고, 실측으로도 예측이 무예측보다 나빴다(T-015).
+#
+# FIXED_PREPRICE_RATE: 자사 투찰 151건에 대한 c 스윕 최적값(100.05%).
+#   c 를 낮추면 유효율은 오르지만 하한가 근접 빈도가 떨어진다 —
+#   c=99.30 이면 유효율 93% 인데 ±0.10%p 근접은 11건, c=100.05 는 유효율 55% 에 19건이다.
+#   **무효율을 낮추는 것이 목표가 아니다.** 절반쯤 무효는 감수하는 값이다.
+#   참고: DB 전체 12,010건의 preprice_rate 중앙값은 0.999332 로 이보다 낮다.
+#   자사 투찰이 국군재정관리단(평균 1.00287) 등에 몰려 있어 생긴 차이이며,
+#   발주처별로 가르는 것은 T-020 이다.
+#
+# PREPRICE_MAD: 남은 불확실성. 어떤 방법으로도 줄일 수 없는 제도적 산포다.
+#   bids_history.preprice_rate 12,010건 실측 MAD (sd 는 0.007059).
+FIXED_PREPRICE_RATE = Decimal("1.0005")
+PREPRICE_MAD = Decimal("0.004856")
 
 
 def _get_fetcher():
@@ -139,40 +155,28 @@ async def calculate_bid(
     # ── 3. 버킷 분류 ────────────────────────────────────
     bucket_id = ProjectBucket.get_bucket_id(base_price)
 
-    # ── 4. Fallback 기반 사정률 데이터 조회 ──────────────
-    try:
-        rates, fallback_level = await get_rates_with_fallback(
-            db=db,
-            client_name=client_name,
-            region=region,
-            project_type=project_type,
-            bucket_id=bucket_id,
-            bid_type=bid_type,
-            client_id=client_id,
-        )
-    except Exception as e:
-        rates, fallback_level = [], LEVEL_NONE
+    # ── 4. 사정률 = 고정값 (예측하지 않는다) ─────────────
+    # 자사 투찰 기록 151건(2026-05-27~08-27) 실측 결과 예측이 무예측보다 나빴다:
+    #   자사 추정 RMSE 0.994%p  vs  고정값 0.630%p        → 1.58배 악화
+    #   예측력 상관 r=+0.093 (p=0.255)                   → 정보 없음
+    #   계통 편향 +0.2927%p (t=3.79) 로 무효율 67%
+    # 고정값으로 바꾸면 하한가 ±0.10%p 근접이 5건 → 19건(3.8배)이 된다.
+    # 근거·재현: tasks.md T-015 / `python scripts/analyze_my_bids.py`
+    #
+    # 기존 경로는 `bids_history.adjustment_rate` 의 trimmed_median 을 썼는데,
+    # 그 컬럼은 사정률이 아니라 **낙찰가/기초금액**(중앙 0.88342)이다.
+    # `calculator` 가 이를 `예정가격 = base_price × predicted_rate` 로 쓰므로
+    # 예정가격이 13.1% 낮게 추정되고 있었다(10억 공고에서 1.16억). 같이 제거한다.
+    # 진짜 사정률은 `bids_history.preprice_rate` 다 (중앙 0.999332).
+    predicted_rate = FIXED_PREPRICE_RATE
+    mad_val = PREPRICE_MAD
+    fallback_level = "fixed"
 
-    if fallback_level == LEVEL_NONE or not rates:
-        # 데이터 부족 또는 DB 오류 시 기본 사정률 사용 (1.0000)
-        predicted_rate = Decimal("1.0000")
-        mad_val = Decimal("0.002")
-        fallback_level = "default"
-    else:
-        # ── 5. 통계 계산 ────────────────────────────────
-        predicted_rate = trimmed_median(rates)
-        mad_val = mad(rates)
-
-    # ── 5-1. 예측 구간 및 신뢰도 등급 계산 ──────────────
+    # ── 5. 구간 및 신뢰도 등급 ──────────────────────────
+    # 고정값이므로 등급은 항상 같다. 남은 불확실성은 제도가 만드는
+    # 사정률 자체의 산포이고, 그건 어떤 방법으로도 줄일 수 없다.
     rate_lower, rate_upper = confidence_range(predicted_rate, mad_val)
-    if fallback_level == "default":
-        confidence_grade = "low"
-    elif mad_val <= Decimal("0.003"):
-        confidence_grade = "high"
-    elif mad_val <= Decimal("0.007"):
-        confidence_grade = "medium"
-    else:
-        confidence_grade = "low"
+    confidence_grade = "fixed"
 
     # ── 6. 투찰가 계산 (Multi-Shot Bid Spread) ──────────
     result = calculate_bid_spread(
@@ -195,7 +199,13 @@ async def calculate_bid(
             client_name=notice.client_name,
             region=notice.region,
             project_type=notice.project_type,
-            lower_limit_rate=float(notice.lower_limit_rate),
+            # 원본 fetch 값이라 None 일 수 있다. 위쪽 None 가드는 override 적용 **후**
+            # 값에 걸려 있어서, override 로 계산이 성공한 경우 여기만 None 으로 남는다.
+            lower_limit_rate=(
+                float(notice.lower_limit_rate)
+                if notice.lower_limit_rate is not None
+                else None
+            ),
             participants=notice.participants,
         ),
         strategy=result["strategy"],

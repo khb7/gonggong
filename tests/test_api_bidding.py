@@ -112,18 +112,86 @@ def test_calculate_auto_mode_returns_1_bid(client):
         assert "digit_filter_triggered" in bid
 
 
-def test_calculate_auto_mode_default_fallback(client):
-    """데이터 없으면 fallback_level이 'default'이어야 한다."""
+def test_calculate_never_predicts_preprice_rate(client):
+    """사정률은 예측하지 않는다 — DB 내용과 무관하게 항상 고정값이어야 한다.
+
+    T-015: 자사 투찰 151건 실측에서 사정률 예측이 무예측보다 1.58배 나빴다
+    (RMSE 0.994%p vs 0.630%p, 예측력 r=+0.093 p=0.255).
+    과거에는 `bids_history.adjustment_rate` 의 trimmed_median 을 썼는데
+    그 컬럼은 사정률이 아니라 낙찰가/기초금액이라 예정가격이 13% 낮게 나왔다.
+
+    이 테스트는 "DB 에 데이터가 있든 없든 결과가 같다" 를 고정한다.
+    """
+    from app.api.v1.bidding import FIXED_PREPRICE_RATE
+
+    def _call():
+        return client.post(
+            "/api/v1/bid/calculate", json={"bid_notice_id": "TEST-001"}
+        ).json()
+
+    # 데이터가 없는 경우
     with patch("app.data.fallback.get_rates_by_client", return_value=[]), \
          patch("app.data.fallback.get_rates_by_region", return_value=[]), \
          patch("app.data.fallback.get_rates_by_type_and_bucket", return_value=[]), \
          patch("app.data.fallback.get_all_rates", return_value=[]):
+        empty = _call()
 
+    # 데이터가 잔뜩 있고, 그 값이 고정값과 크게 다른 경우
+    bogus = [Decimal("0.88")] * 50
+    with patch("app.data.fallback.get_rates_by_client", return_value=bogus), \
+         patch("app.data.fallback.get_rates_by_region", return_value=bogus), \
+         patch("app.data.fallback.get_rates_by_type_and_bucket", return_value=bogus), \
+         patch("app.data.fallback.get_all_rates", return_value=bogus):
+        filled = _call()
+
+    assert empty["fallback_level"] == "fixed"
+    assert filled["fallback_level"] == "fixed"
+    assert empty["predicted_rate"] == pytest.approx(float(FIXED_PREPRICE_RATE))
+    # DB 에 0.88 이 잔뜩 있어도 끌려가지 않는다
+    assert filled["predicted_rate"] == pytest.approx(float(FIXED_PREPRICE_RATE))
+    assert filled["bids"] == empty["bids"]
+
+
+def test_calculate_survives_null_lower_limit_from_g2b(client):
+    """G2B 가 하한율을 못 줘도 override 로 계산이 끝나야 한다 (T-021).
+
+    `G2BNoticeData.lower_limit_rate` 는 설계상 None 을 허용한다 — 임의 상수로 채우지 않는다.
+    그런데 응답의 `fetched` 는 **원본 fetch 값**을 싣기 때문에, 위쪽 None 가드
+    (override 적용 후 값에 걸려 있다)를 통과한 뒤 여기서만 None 이 남는다.
+    이걸 float() 하다 500 이 났었다. override 가 이 상황의 정식 우회 경로이므로
+    그 경로가 막히면 안 된다.
+    """
+    from app.external.g2b_fetcher import G2BNoticeData
+
+    notice = G2BNoticeData(
+        base_price=1_000_000_000,
+        client_name="경기도 화성시",
+        region="경기",
+        project_type="조경",
+        lower_limit_rate=None,          # ← G2B 가 못 준 상황
+        participants=300,
+    )
+
+    class _Fetcher:
+        async def fetch(self, *a, **k):
+            return notice
+
+    with patch("app.api.v1.bidding._get_fetcher", return_value=_Fetcher()):
         resp = client.post(
             "/api/v1/bid/calculate",
-            json={"bid_notice_id": "TEST-001"},
+            json={
+                "bid_notice_id": "TEST-001",
+                "overrides": {"lower_limit_rate": 0.87745},
+            },
         )
-    assert resp.json()["fallback_level"] == "default"
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # 계산은 override 값으로 정상 수행되고
+    assert body["bids"]
+    # fetch 실패는 숨기지 않고 null 로 드러낸다
+    assert body["fetched"]["lower_limit_rate"] is None
+    assert "lower_limit_rate" in body["overridden_fields"]
 
 
 # ──────────────────────────────────────────

@@ -21,7 +21,10 @@ class FetchedData(BaseModel):
     client_name: str
     region: str
     project_type: str
-    lower_limit_rate: float
+    # None = 공고에서 낙찰하한율을 확인할 수 없었다 (미개찰 등).
+    # `G2BNoticeData.lower_limit_rate` 와 같은 규약이다 — 임의 상수로 채우지 않는다.
+    # 이 필드는 **원본 fetch 값**이므로, override 로 계산이 성공해도 여기는 null 일 수 있다.
+    lower_limit_rate: float | None
     participants: int
 
 
@@ -39,7 +42,7 @@ class BidResponse(BaseModel):
     predicted_rate: float = Field(..., description="사정률 예측값 (Trimmed Median)")
     mad_value: float = Field(..., description="MAD 값")
     prediction_range: list[float] = Field(..., description="예측 구간 [lower, upper] = predicted_rate ± MAD")
-    confidence_grade: str = Field(..., description='신뢰도 등급: "high" (MAD≤0.003) | "medium" (≤0.007) | "low" (>0.007)')
-    fallback_level: str = Field(..., description="사용된 Fallback 레벨")
+    confidence_grade: str = Field(..., description='신뢰도 등급. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')
+    fallback_level: str = Field(..., description='사용된 Fallback 레벨. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')
 
     bids: list[BidItem] = Field(..., description="추천 투찰가 목록 (Aggressive → Safe)")
