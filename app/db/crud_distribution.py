@@ -6,7 +6,7 @@ distribution engine용 DB 조회.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import select, func, or_, exists
+from sqlalchemy import select, func, or_, exists, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import BidParticipants, BidsHistory, BidLicenseType
@@ -109,6 +109,10 @@ def _target_filters() -> list:
 _RATE_MIN = Decimal("0.5")
 _RATE_MAX = Decimal("1.05")
 
+# offset bin 해상도. app/engine/distribution.py::_BIN_PCT_RESOLUTION 과 반드시 같아야 한다
+# — SQL 집계 결과와 파이썬 집계 결과가 같은 bin 에 떨어져야 하기 때문이다.
+_BIN_DECIMALS = 1
+
 _RATE_SANITY_FILTERS = (
     BidParticipants.bid_rate >= _RATE_MIN,
     BidParticipants.bid_rate <= _RATE_MAX,
@@ -153,7 +157,7 @@ async def get_offset_distribution(
     bucket_id: int | None = None,
 ) -> list[dict]:
     """
-    bid_participants JOIN bids_history 에서 offset 계산에 필요한 행을 반환한다.
+    offset 히스토그램을 **SQL 에서 집계해** 반환한다.
 
     필터: 적격심사 + 복수예비가격. 인자를 주면 해당 조건으로 좁힌다 (fallback 없음).
 
@@ -172,26 +176,46 @@ async def get_offset_distribution(
     근거: md/design/bid_rate_definitions.md
 
     Returns:
-        [{"bid_rate": Decimal, "lower_limit_rate": Decimal, "is_winner": bool}, ...]
+        offset_pct 오름차순 bin 목록.
+        [{"offset_pct": float, "count": int, "win_count": int}, ...]
     """
     conditions, needs_license = _scope_conditions(client_name, region, project_type, bucket_id)
 
+    # ⚠ 집계는 반드시 SQL 에서 한다.
+    #
+    # 예전에는 참여자 행을 그대로 반환하고 파이썬이 셌다. 글로벌 스코프는
+    # 4,490,350 행이라 RAM 1GB 서버(E2.1.Micro)에서 스래싱으로 OS 가 멈췄다.
+    # SQL 집계로 바꾸면 결과가 579 bin 이고 RSS 14.6MB 다 (서버 실측).
+    offset_pct = func.round(
+        (
+            BidParticipants.bid_rate
+            - func.coalesce(BidsHistory.legal_limit_rate, BidsHistory.lower_limit_rate)
+        )
+        * 100,
+        _BIN_DECIMALS,
+    ).label("offset_pct")
+
     q = (
         select(
-            BidParticipants.bid_rate,
-            func.coalesce(
-                BidsHistory.legal_limit_rate, BidsHistory.lower_limit_rate
-            ).label("lower_limit_rate"),
-            BidParticipants.is_winner,
+            offset_pct,
+            func.count().label("count"),
+            func.sum(
+                case((BidParticipants.is_winner.is_(True), 1), else_=0)
+            ).label("win_count"),
         )
+        .select_from(BidParticipants)
         .join(BidsHistory, BidParticipants.project_id == BidsHistory.project_id)
     )
     if needs_license:
         q = q.join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id)
 
-    result = await db.execute(q.where(*conditions))
+    result = await db.execute(q.where(*conditions).group_by(offset_pct).order_by(offset_pct))
     return [
-        {"bid_rate": row.bid_rate, "lower_limit_rate": row.lower_limit_rate, "is_winner": row.is_winner}
+        {
+            "offset_pct": float(row.offset_pct),
+            "count": int(row.count),
+            "win_count": int(row.win_count or 0),
+        }
         for row in result.fetchall()
     ]
 

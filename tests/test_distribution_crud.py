@@ -26,6 +26,15 @@ from app.db.crud_distribution import (
 LOWER_LIMIT = Decimal("0.87745")
 
 
+def _total(bins: list[dict]) -> int:
+    """집계된 bin 목록의 총 참여자 수.
+
+    get_offset_distribution 은 SQL 에서 집계해 bin 을 돌려준다(원시 행이 아니다).
+    글로벌 스코프 4,490,350 행을 파이썬으로 올리면 RAM 1GB 서버가 멈추기 때문이다.
+    """
+    return sum(b["count"] for b in bins)
+
+
 @pytest_asyncio.fixture
 async def db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -98,10 +107,11 @@ async def test_offset_rows_exclude_dummy_bid_rate(db):
     await _add_participants(db, "P1", ["452586.75392"], rank_from=4)  # 더미
     await db.commit()
 
-    rows = await get_offset_distribution(db, client_name="테스트발주처")
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
 
-    assert all(r["bid_rate"] <= Decimal("1.05") for r in rows), (
-        f"상한 초과 행이 남았다: {[str(r['bid_rate']) for r in rows]}"
+    assert _total(bins) == 3, f"더미 행이 집계에 남았다: {bins}"
+    assert max(b["offset_pct"] for b in bins) < 100, (
+        f"더미 행이 offset 축을 밀어 올렸다: {bins}"
     )
 
 
@@ -117,10 +127,11 @@ async def test_offset_rows_exclude_implausibly_low_bid_rate(db):
     await _add_participants(db, "P1", ["0.033"], rank_from=4)  # 자리수 깨짐
     await db.commit()
 
-    rows = await get_offset_distribution(db, client_name="테스트발주처")
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
 
-    assert all(r["bid_rate"] >= Decimal("0.5") for r in rows), (
-        f"저가 이상치가 남았다: {[str(r['bid_rate']) for r in rows]}"
+    assert _total(bins) == 3, f"저가 이상치가 집계에 남았다: {bins}"
+    assert min(b["offset_pct"] for b in bins) > -50, (
+        f"저가 이상치가 offset 축을 끌어내렸다: {bins}"
     )
 
 
@@ -135,10 +146,11 @@ async def test_offset_rows_exclude_negative_bid_rate(db):
     await _add_participants(db, "P1", ["-9.46"], rank_from=4)  # 파싱 오류
     await db.commit()
 
-    rows = await get_offset_distribution(db, client_name="테스트발주처")
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
 
-    assert all(r["bid_rate"] > Decimal("0") for r in rows), (
-        f"음수 행이 남았다: {[str(r['bid_rate']) for r in rows]}"
+    assert _total(bins) == 3, f"음수 행이 집계에 남았다: {bins}"
+    assert min(b["offset_pct"] for b in bins) > -50, (
+        f"음수 행이 offset 축을 끌어내렸다: {bins}"
     )
 
 
@@ -213,15 +225,15 @@ async def test_client_level_isolates_by_client_name(db):
         await _add_participants(db, f"OTHER-{i}", ["0.900"] * 20)
     await db.commit()
 
-    rows, scope = await resolve_offset_distribution(
+    bins, scope = await resolve_offset_distribution(
         db, "우리발주처", "경기", "조경", 3
     )
 
     assert scope.level == "client"
     assert scope.label == "우리발주처"
-    assert all(r["bid_rate"] == Decimal("0.880") for r in rows), (
-        "다른 발주처 행이 섞였다 — client 레벨이 발주처를 못 가른다"
-    )
+    # 우리발주처는 전부 0.880 → offset 하나뿐. 남의발주처(0.900)가 섞이면 bin 이 늘어난다.
+    assert len(bins) == 1, f"다른 발주처 행이 섞였다 — client 레벨이 발주처를 못 가른다: {bins}"
+    assert _total(bins) == 12 * 20
 
 
 # ──────────────────────────────────────────
@@ -247,17 +259,13 @@ async def test_offset_rows_exclude_notice_with_impossible_winner(db):
     await _add_participants(db, "BAD1", ["0.870", "0.880", "0.885"])
     await db.commit()
 
-    rows = await get_offset_distribution(db, client_name="테스트발주처")
-    got = {str(r["bid_rate"]) for r in rows}
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
 
-    assert "0.878000" in got or Decimal("0.878") in {r["bid_rate"] for r in rows}, (
-        "정상 공고가 빠졌다"
-    )
-    assert all(r["bid_rate"] >= LOWER_LIMIT for r in rows if r["is_winner"]), (
-        "하한율 미만 낙찰자가 남았다"
-    )
     # 오염 공고는 낙찰자뿐 아니라 그 공고의 모든 참여자가 빠져야 한다
-    assert len(rows) == 3, f"오염 공고 행이 남았다 (총 {len(rows)}행)"
+    assert _total(bins) == 3, f"오염 공고 행이 남았다: {bins}"
+    # 남은 낙찰자는 정상 공고의 0.878 하나뿐이고 하한율 위에 있다
+    assert sum(b["win_count"] for b in bins) == 1
+    assert min(b["offset_pct"] for b in bins if b["win_count"]) >= 0
 
 
 @pytest.mark.asyncio
@@ -272,5 +280,5 @@ async def test_offset_rows_keep_winner_within_rounding_tolerance(db):
     await _add_participants(db, "EDGE1", ["0.87744", "0.880"])
     await db.commit()
 
-    rows = await get_offset_distribution(db, client_name="테스트발주처")
-    assert len(rows) == 2, f"허용 오차 안의 공고가 빠졌다 (총 {len(rows)}행)"
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
+    assert _total(bins) == 2, f"허용 오차 안의 공고가 빠졌다: {bins}"

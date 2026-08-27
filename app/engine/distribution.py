@@ -45,6 +45,18 @@ def build_offset_distribution(rows: list[dict]) -> list[dict]:
     return sorted(bins.values(), key=lambda b: b["offset_pct"])
 
 
+def _as_bins(data: list[dict] | None) -> list[dict] | None:
+    """참여자 원시 행이면 집계하고, 이미 bin 이면 그대로 쓴다.
+
+    조회 경로는 SQL 에서 집계해 bin 을 바로 주고(4.5M 행을 파이썬으로 올리면
+    RAM 1GB 서버가 스래싱으로 멈춘다 — 실측), 백테스트·테스트는 원시 행을 넘긴다.
+    둘 다 받도록 여기서 한 번만 판별한다.
+    """
+    if not data:
+        return data
+    return data if "offset_pct" in data[0] else build_offset_distribution(data)
+
+
 def build_scoped_distribution(
     rows: list[dict],
     global_rows: list[dict] | None = None,
@@ -60,18 +72,15 @@ def build_scoped_distribution(
     그래서 count만 좁히고 낙찰 빈도는 항상 전체 표본에서 가져온다.
 
     Args:
-        rows: 선택된 fallback 레벨의 참여자 행
-        global_rows: 전체 참여자 행. None이면 rows를 그대로 쓴다 (= 글로벌 레벨)
+        rows: 선택된 fallback 레벨의 참여자 행 **또는** 이미 집계된 bin 목록
+        global_rows: 전체 참여자 행/bin. None이면 rows를 그대로 쓴다 (= 글로벌 레벨)
 
     Returns:
         offset_pct 오름차순 bin 목록.
         각 bin: {offset_pct, count(필터), win_count(글로벌), historical_win_rate(글로벌)}
     """
-    scoped = build_offset_distribution(rows)
-    if global_rows is None:
-        source = scoped
-    else:
-        source = build_offset_distribution(global_rows)
+    scoped = _as_bins(rows) or []
+    source = scoped if global_rows is None else (_as_bins(global_rows) or [])
 
     win_by_offset = {b["offset_pct"]: b for b in source}
 
