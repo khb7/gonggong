@@ -16,12 +16,14 @@ Info21c 클린 CSV → bids_history DB 적재 스크립트.
 
 있으면 좋은 컬럼 (없어도 동작):
   예정가격결정방식, 1순위사정율, g2b분류
+  낙찰하한가, 공고명  ← A값 역산에 사용 (Info21c `입찰리스트` 엑셀에 있음)
 """
 
 import argparse
 import asyncio
 import os
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -32,6 +34,44 @@ from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.db.models import BidsHistory, BidLicenseType
 from app.db.normalize import parse_license_types
+from app.engine.a_value import has_a_value_tag, split_limit_rates
+
+_NULLISH = ("", "nan", "none", "nat", "0")
+
+
+def _parse_amount(raw) -> int | None:
+    """'12,655,480,175' 형태의 금액 문자열을 int로. 비었으면 None."""
+    if raw is None:
+        return None
+    text = str(raw).replace(",", "").strip()
+    if text.lower() in _NULLISH:
+        return None
+    try:
+        value = int(float(text))
+    except (ValueError, TypeError):
+        return None
+    return value if value > 0 else None
+
+
+def _parse_rate(raw) -> Decimal | None:
+    """
+    비율 컬럼을 Decimal(소수)로 변환한다.
+    퍼센트 단위(87.745)로 들어오면 100으로 나눈다. 비었으면 None.
+    """
+    if raw is None:
+        return None
+    text = str(raw).replace(",", "").replace("%", "").strip()
+    if text.lower() in _NULLISH:
+        return None
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if value <= 0:
+        return None
+    if value > 1:
+        value = value / Decimal(100)
+    return value
 
 
 def normalize_region(raw: str) -> str:
@@ -125,7 +165,10 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
         })
         # 요약 포맷에서 없는 컬럼 기본값으로 채우기
         df["개찰순위"]              = "1"
-        df["낙찰하한율"]            = 0.87745   # fallback; 낙찰하한가 컬럼 있으면 루프에서 재계산
+        # 요약 포맷에는 법정 낙찰하한율 컬럼이 없다.
+        # 상수를 채우면 가짜 법정값이 되므로 비워두고, 낙찰하한가에서 역추정한다.
+        # (a_value.split_limit_rates 참고)
+        df["낙찰하한율"]            = None
         if "입찰참여자수" not in df.columns:
             df["입찰참여자수"]      = 0
         if "수요기관지역" not in df.columns:
@@ -156,7 +199,7 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             est_price   = int(float(str(row["예산가격"]).replace(",", "").strip()))
             winner_price = int(float(str(row["투찰금액"]).replace(",", "").strip()))
             participants = int(float(str(row["입찰참여자수"]).replace(",", "").strip()))
-            lower_limit  = float(str(row["낙찰하한율"]).replace(",", "").strip())
+            declared_limit = _parse_rate(row["낙찰하한율"])
 
             # 유효성 검사 (participants=0은 요약 포맷에서 허용)
             if base_price <= 0 or est_price <= 0:
@@ -175,12 +218,26 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 err_type += 1
                 continue
 
-            # 낙찰하한율: 낙찰하한가 컬럼 있으면 낙찰하한가/예정가격으로 계산
-            raw_llh = row.get("낙찰하한가", None)
-            if raw_llh is not None and str(raw_llh).strip() not in ("", "nan", "0"):
-                lower_limit = float(str(raw_llh).replace(",", "").strip()) / est_price
-            elif lower_limit > 1:
-                lower_limit = lower_limit / 100.0
+            # ── 낙찰하한율 분리 + A값 역산 ─────────────────────────────
+            # 낙찰하한가 = (예정가격 − A) × 법정하한율 + A
+            #   ⇒ 법정 하한율 / 실효 하한율 / A값 세 가지를 분리해서 저장한다.
+            lower_limit_price = _parse_amount(row.get("낙찰하한가", None))
+            legal_rate, effective_rate, a_value = split_limit_rates(
+                expected_price=est_price,
+                lower_limit_price=lower_limit_price,
+                declared_limit_rate=declared_limit,
+            )
+            # 포맷 A는 `입찰공고명`, 요약 포맷은 `공고명`으로 들어온다.
+            notice_name = row.get("공고명", None) or row.get("입찰공고명", None)
+            has_a_value = has_a_value_tag(notice_name) or a_value > 0
+
+            if legal_rate is None and effective_rate is None:
+                err_value += 1
+                continue
+
+            # lower_limit_rate(하위 호환)는 기존 동작 유지 —
+            # 실효값이 있으면 실효, 없으면 법정값.
+            lower_limit = effective_rate if effective_rate is not None else legal_rate
 
             # 날짜
             bid_date = None
@@ -227,6 +284,10 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 "price_method":     price_method,
                 "base_price":       base_price,
                 "lower_limit_rate": lower_limit,
+                "legal_limit_rate": legal_rate,
+                "effective_limit_rate": effective_rate,
+                "a_value":          a_value,
+                "has_a_value":      has_a_value,
                 "adjustment_rate":  adjustment_rate,
                 "winner_price":     winner_price,
                 "participants":     participants,
@@ -239,6 +300,17 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
     print(f"  → 드롭: 값 오류 {err_value}건, 공종 미매핑 {err_type}건, 파싱 오류 {err_parse}건")
     df_final = pd.DataFrame(records)
     print(f"  → DB 적재 대상: {len(df_final)}건")
+
+    if not df_final.empty:
+        tagged = int(df_final["has_a_value"].sum())
+        derived = df_final[df_final["a_value"] > 0]
+        print(f"  → A값: 적용 공고 {tagged}건 / 역산 성공 {len(derived)}건", end="")
+        if not derived.empty:
+            ratios = derived["a_value"] / (df_final.loc[derived.index, "base_price"])
+            print(f", 기초금액 대비 평균 {ratios.mean() * 100:.2f}%")
+        else:
+            print("")
+
     return df_final
 
 
@@ -277,6 +349,10 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                     existing.price_method     = row["price_method"]
                     existing.base_price       = row["base_price"]
                     existing.lower_limit_rate = row["lower_limit_rate"]
+                    existing.legal_limit_rate = row["legal_limit_rate"]
+                    existing.effective_limit_rate = row["effective_limit_rate"]
+                    existing.a_value          = row["a_value"]
+                    existing.has_a_value      = row["has_a_value"]
                     existing.adjustment_rate  = row["adjustment_rate"]
                     existing.winner_price     = row["winner_price"]
                     existing.participants     = row["participants"]
@@ -296,6 +372,10 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                 price_method     = row["price_method"],
                 base_price       = row["base_price"],
                 lower_limit_rate = row["lower_limit_rate"],
+                legal_limit_rate = row["legal_limit_rate"],
+                effective_limit_rate = row["effective_limit_rate"],
+                a_value          = row["a_value"],
+                has_a_value      = row["has_a_value"],
                 adjustment_rate  = row["adjustment_rate"],
                 winner_price     = row["winner_price"],
                 participants     = row["participants"],
@@ -329,6 +409,10 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
 async def main():
     parser = argparse.ArgumentParser(description="Info21c 클린 CSV → DB 적재")
     parser.add_argument("--file", required=True, help="다운로드된 CSV 파일 경로")
+    parser.add_argument(
+        "--upsert", action="store_true",
+        help="기존 project_id도 덮어쓴다 (A값 등 신규 컬럼 백필 시 사용)",
+    )
     args = parser.parse_args()
 
     file_path = Path(args.file)
@@ -337,8 +421,9 @@ async def main():
         sys.exit(1)
 
     df = extract_and_transform(file_path)
-    inserted, skipped = await load_to_db(df)
-    print(f"\n완료: 신규 {inserted}건 / 스킵 {skipped}건")
+    inserted, touched = await load_to_db(df, upsert=args.upsert)
+    label = "업데이트" if args.upsert else "스킵"
+    print(f"\n완료: 신규 {inserted}건 / 기존 {touched}건 {label}")
 
 
 if __name__ == "__main__":

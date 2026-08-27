@@ -59,6 +59,29 @@ class BidsHistory(Base):
         comment="나라장터 공사 분류 코드 (g2b분류)"
     )
 
+    # ── 2026-08-27 추가: A값 분리 ────────────────────────────
+    #
+    # lower_limit_rate 컬럼에는 두 가지 의미가 섞여 들어왔다.
+    #   - 원본에 낙찰하한가가 있던 행 → A값이 녹아든 '실효' 하한율
+    #   - 없던 행 / G2B 수집분        → A값이 빠진 '법정' 하한율
+    # 아래 세 컬럼으로 의미를 분리한다. lower_limit_rate는 하위 호환용으로 유지.
+    a_value: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0",
+        comment="A값 = 투찰율 적용 제외 법정경비 합계 (원). 미상이면 0"
+    )
+    has_a_value: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", index=True,
+        comment="A값 적용 공고 여부 (공고명 [A값] 태그 기준)"
+    )
+    legal_limit_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 6), nullable=True,
+        comment="법정 낙찰하한율 (A값 제외, 예: 0.877450)"
+    )
+    effective_limit_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 8), nullable=True,
+        comment="실효 낙찰하한율 = 낙찰하한가 / 예정가격 (A값 포함)"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

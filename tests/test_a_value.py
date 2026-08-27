@@ -1,0 +1,269 @@
+"""
+tests/test_a_value.py
+A값 역산 · 실효 하한율 · A값 반영 투찰가 검증.
+
+검증 데이터는 실제 Info21c `입찰리스트` 엑셀
+(data/downloads/info21c_0002_20250501_20250515.xlsx, 2025-05-01~15)에서 가져왔다.
+"""
+
+from decimal import Decimal
+
+import pytest
+
+from app.engine.a_value import (
+    bid_price_with_a_value,
+    derive_a_value,
+    effective_limit_rate,
+    has_a_value_tag,
+    resolve_legal_limit_rate,
+    split_limit_rates,
+)
+from app.engine.calculator import calculate_single
+
+
+# ── [A값] 태그 파싱 ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", [
+    "학생회관 승강기 설치 공사 [제한][A값][순]",
+    "부천시 보훈회관 노후시설물 정비 및 교체공사 [관내][수의][기초][A값]",
+    # 공고명이 잘려 닫는 괄호가 사라진 경우
+    "남양읍 행정복지센터 건립사업(건축) [내역][공의][기초][A값",
+])
+def test_has_a_value_tag_true(name):
+    assert has_a_value_tag(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "국립세종도서관 옥상 방수 및 누수 보수공사 (긴급) [급][수의][기초]",
+    "25-81) 박격포 차양대 신축 시설공사 [공]",
+    "",
+    None,
+])
+def test_has_a_value_tag_false(name):
+    assert has_a_value_tag(name) is False
+
+
+# ── 법정 하한율 역추정 ─────────────────────────────────────────
+
+
+def test_resolve_legal_rate_snaps_down():
+    """실효 하한율 이하의 후보 중 가장 큰 값을 고른다."""
+    assert resolve_legal_limit_rate(Decimal("0.88255")) == Decimal("0.88000")
+
+
+def test_resolve_legal_rate_exact_match():
+    """A값이 없으면 실효 = 법정이므로 그대로 매칭된다."""
+    assert resolve_legal_limit_rate(Decimal("0.87745")) == Decimal("0.87745")
+
+
+def test_resolve_legal_rate_prefers_declared():
+    """원본에 낙찰하한율 컬럼이 있으면 추정보다 우선한다."""
+    got = resolve_legal_limit_rate(Decimal("0.88255"), declared=Decimal("0.86745"))
+    assert got == Decimal("0.86745")
+
+
+def test_resolve_legal_rate_rejects_impossible_declared():
+    """법정 하한율이 실효 하한율보다 높은 건 모순 — 신뢰하지 않는다."""
+    got = resolve_legal_limit_rate(Decimal("0.87745"), declared=Decimal("0.95"))
+    assert got == Decimal("0.87745")
+
+
+def test_resolve_legal_rate_below_all_candidates():
+    assert resolve_legal_limit_rate(Decimal("0.5")) is None
+
+
+# ── A값 역산 ───────────────────────────────────────────────────
+
+
+def test_derive_a_value_real_case():
+    """
+    실측: 학생회관 승강기 설치 공사 [제한][A값][순]
+        예정가격    328,577,900
+        낙찰하한가  289,985,144
+        법정 하한율 0.88
+      ⇒ A = (289,985,144 − 328,577,900 × 0.88) / 0.12 = 6,971,600
+    """
+    a = derive_a_value(328_577_900, 289_985_144, Decimal("0.88"))
+    assert a == pytest.approx(6_971_600, abs=10)
+
+
+def test_derive_a_value_zero_when_no_a_value():
+    """
+    실측: 국립세종도서관 옥상 방수 (A값 태그 없음)
+        예정가격 143,317,675 × 0.87745 = 125,754,094 = 낙찰하한가
+      ⇒ A = 0
+    """
+    assert derive_a_value(143_317_675, 125_754_094, Decimal("0.87745")) == 0
+
+
+def test_derive_a_value_ignores_rounding_noise():
+    """원 단위 절사로 생기는 잔차는 0으로 떨어뜨린다."""
+    assert derive_a_value(143_317_675, 125_754_095, Decimal("0.87745")) == 0
+
+
+def test_derive_a_value_guards_bad_input():
+    assert derive_a_value(0, 100, Decimal("0.88")) == 0
+    assert derive_a_value(100, 0, Decimal("0.88")) == 0
+    assert derive_a_value(100, 90, Decimal("1")) == 0
+
+
+# ── 실효 하한율 ────────────────────────────────────────────────
+
+
+def test_effective_limit_rate_matches_source_data():
+    """역산한 A값으로 실효 하한율을 되돌리면 원래 비율이 나온다."""
+    eff = effective_limit_rate(328_577_900, 6_971_600, Decimal("0.88"))
+    assert float(eff) == pytest.approx(289_985_144 / 328_577_900, abs=1e-7)
+
+
+def test_effective_equals_legal_when_no_a_value():
+    assert effective_limit_rate(1_000_000_000, 0, Decimal("0.89745")) == Decimal("0.89745")
+
+
+# ── split_limit_rates (ETL 진입점) ────────────────────────────
+
+
+def test_split_limit_rates_with_a_value():
+    legal, eff, a = split_limit_rates(328_577_900, 289_985_144, None)
+    assert legal == Decimal("0.88000")
+    assert float(eff) == pytest.approx(0.88255, abs=1e-5)
+    assert a == pytest.approx(6_971_600, abs=10)
+
+
+def test_split_limit_rates_without_lower_limit_price():
+    """낙찰하한가가 없으면 A값을 알 수 없다 — 신고값을 양쪽에 그대로 둔다."""
+    legal, eff, a = split_limit_rates(143_317_675, None, Decimal("0.87745"))
+    assert legal == Decimal("0.87745")
+    assert eff == Decimal("0.87745")
+    assert a == 0
+
+
+# ── 투찰가 공식 ────────────────────────────────────────────────
+
+
+def test_bid_price_with_a_value_hits_the_floor():
+    """
+    A값을 반영하면 낙찰하한가에 정확히 붙는다.
+    (offset=0, 예정가격/A값/하한율 모두 실측값)
+    """
+    price = bid_price_with_a_value(328_577_900, 6_971_600, Decimal("0.88"))
+    assert price == pytest.approx(289_985_144, abs=2)
+
+
+def test_ignoring_a_value_falls_below_the_floor():
+    """A값을 빼먹으면 하한가 아래로 떨어져 부적격 탈락한다."""
+    naive = bid_price_with_a_value(328_577_900, 0, Decimal("0.88"))
+    assert naive < 289_985_144
+    assert 289_985_144 - naive == pytest.approx(836_592, abs=10)
+
+
+def test_calculate_single_backward_compatible():
+    """a_value=0이면 기존 공식 base_price × predicted_rate × (LLR+offset)과 같다."""
+    base_price = 1_000_000_000
+    llr = Decimal("0.89745")
+    predicted = Decimal("1.0")
+    offset = Decimal("0.001")
+
+    got = calculate_single(base_price, llr, predicted, offset)
+    expected = int(Decimal(base_price) * predicted * (llr + offset))
+
+    assert got["price_krw"] == expected
+    assert got["a_value"] == 0
+
+
+def test_calculate_single_with_a_value_is_higher():
+    """A값이 있으면 같은 offset에서 투찰가가 더 높다."""
+    base_price = 328_577_900
+    llr = Decimal("0.88")
+
+    without = calculate_single(base_price, llr, Decimal("1.0"), Decimal("0"), a_value=0)
+    with_a = calculate_single(base_price, llr, Decimal("1.0"), Decimal("0"), a_value=6_971_600)
+
+    assert with_a["price_krw"] > without["price_krw"]
+    assert with_a["rate_pct"] > without["rate_pct"]
+    assert with_a["a_value"] == 6_971_600
+
+
+def test_calculate_single_rejects_a_value_above_expected_price():
+    """A값이 예정가격을 넘는 이상값이면 무시하고 A값 없이 계산한다."""
+    got = calculate_single(100_000_000, Decimal("0.88"), Decimal("1.0"), Decimal("0"),
+                           a_value=200_000_000)
+    assert got["a_value"] == 0
+    assert got["price_krw"] == 88_000_000
+
+
+# ── 분포상 내 위치 (A값 조정) ──────────────────────────────────────
+
+from app.engine.distribution import calc_my_position
+
+
+def _bins(*offsets: float) -> list[dict]:
+    return [
+        {"offset_pct": o, "count": 10, "win_count": 1, "historical_win_rate": 10.0}
+        for o in offsets
+    ]
+
+
+def _price_at(base_price: int, llr: Decimal, offset_pct: float, a: int) -> int:
+    """분포 축(조정 투찰율) 기준 offset을 실제 투찰금액으로 되돌린다."""
+    rate = llr + Decimal(str(offset_pct)) / Decimal(100)
+    return int((Decimal(base_price) - Decimal(a)) * rate + Decimal(a))
+
+
+def test_my_position_a_value_zero_matches_legacy():
+    """a_value=0이면 기존 계산과 동일하다."""
+    base, llr = 100_000_000, Decimal("0.87745")
+    price = _price_at(base, llr, -0.7, 0)
+    bins = _bins(-0.8, -0.7, -0.5)
+
+    assert calc_my_position(price, base, llr, bins, 0) == calc_my_position(
+        price, base, llr, bins
+    )
+
+
+def test_my_position_uses_adjusted_bid_rate():
+    """
+    분포 x축은 조정 투찰율 (투찰금액−A)/(예정가격−A) 기준이다.
+    A값을 넘기면 같은 offset으로 돌아와야 한다.
+    """
+    base, llr, a = 100_000_000, Decimal("0.87745"), 5_000_000
+    price = _price_at(base, llr, -0.7, a)
+
+    pos = calc_my_position(price, base, llr, _bins(-0.8, -0.7, -0.5), a)
+    assert pos is not None
+    assert pos["offset_pct"] == pytest.approx(-0.7)
+
+
+def test_my_position_without_a_value_shifts_right():
+    """A값 공고인데 A값을 빼먹으면 위치가 오른쪽으로 밀린다."""
+    base, llr, a = 100_000_000, Decimal("0.87745"), 5_000_000
+    price = _price_at(base, llr, -0.7, a)
+    bins = _bins(-2.0, -0.7, 0.0, 2.0)
+
+    correct = calc_my_position(price, base, llr, bins, a)
+    forgotten = calc_my_position(price, base, llr, bins, 0)
+
+    assert correct is not None and correct["offset_pct"] == pytest.approx(-0.7)
+    # 매칭 bin이 없으면 None — 그것 자체가 "축을 벗어났다"는 신호다
+    if forgotten is not None:
+        assert forgotten["offset_pct"] > correct["offset_pct"]
+
+
+def test_my_position_estimated_price_round_trips():
+    """estimated_price는 입력 투찰가를 되돌려준다 (bin 반올림 오차 범위)."""
+    base, llr, a = 100_000_000, Decimal("0.87745"), 5_000_000
+    price = _price_at(base, llr, -0.7, a)
+
+    pos = calc_my_position(price, base, llr, _bins(-0.7), a)
+    assert pos is not None
+    assert pos["estimated_price"] == pytest.approx(price, abs=100)
+
+
+def test_my_position_ignores_a_value_above_base_price():
+    base, llr = 100_000_000, Decimal("0.87745")
+    price = _price_at(base, llr, -0.7, 0)
+
+    pos = calc_my_position(price, base, llr, _bins(-0.7), base * 2)
+    assert pos is not None
+    assert pos["offset_pct"] == pytest.approx(-0.7)

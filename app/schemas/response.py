@@ -12,6 +12,7 @@ class BidItem(BaseModel):
     rate_pct: float = Field(..., description="예가 대비 비율 (%)")
     price_krw: int = Field(..., description="최종 투찰가 (원)")
     digit_filter_triggered: bool = Field(..., description="Digit Filter 발동 여부 (추후 데이터 분석 및 가설 검증용)")
+    a_value: int = Field(0, description="계산에 반영된 A값 (원). 0이면 A값 없는 공고")
 
 
 class FetchedData(BaseModel):
