@@ -222,3 +222,38 @@ describe("실제 붙여넣기 회귀 — 안산시 상록구 예초공사 (2026-
     expect(aValueMissing).toBe(false);
   });
 });
+
+describe("공종 — 업종 줄의 첫 항목이 주력 공종", () => {
+  const line = (trade: string) => `업종\t${trade}\t공고번호\tR26BK00000000-000`;
+
+  it("건축,토건 → 건축 (첫 항목이 주력)", () => {
+    // 실제로 이 공고에서 공종을 못 잡아 앞 공고의 "조경" 이 그대로 남았다.
+    expect(parseInfo21cText(line("건축,토건")).values.project_type).toBe("건축");
+  });
+
+  it("조경(식재.시설물)[대],조경식재 → 조경", () => {
+    expect(parseInfo21cText(line("조경(식재.시설물)[대],조경식재")).values.project_type).toBe("조경");
+  });
+
+  it("실내건축[대],건축(상호허용) → 실내건축 (좁은 것 우선)", () => {
+    expect(parseInfo21cText(line("실내건축[대],건축(상호허용)")).values.project_type).toBe("실내건축");
+  });
+
+  it("업종 줄이 없으면 본문 전체에서 찾는다", () => {
+    expect(parseInfo21cText("실내건축 및 조경 공사").values.project_type).toBe("실내건축");
+  });
+
+  it("DB 의 type_name 과 같은 값을 낸다", () => {
+    // bid_license_types.type_name 과 어긋나면 분포 조회가 매칭되지 않는다
+    const cases: [string, string][] = [
+      ["금속창호.지붕건축물[대]", "금속창호.지붕건축물"],
+      ["도장.습식.방수.석공[대]", "도장.습식.방수.석공"],
+      ["지반조성.포장[대]", "지반조성.포장"],
+      ["철근콘크리트", "철콘"],
+      ["토목", "토목"],
+    ];
+    for (const [raw, want] of cases) {
+      expect(parseInfo21cText(line(raw)).values.project_type).toBe(want);
+    }
+  });
+});

@@ -137,13 +137,16 @@ export default function BidDistribution() {
     setPasteText(text);
     if (!text.trim()) { setParsedFields([]); setAValueMissing(false); return; }
     const { values, filledLabels, aValueMissing } = parseInfo21cText(text);
-    if (values.bid_notice_id) setBidNoticeId(values.bid_notice_id);
-    if (values.client_name) setClientName(values.client_name);
-    if (values.region) setRegion(values.region);
-    if (values.project_type) setProjectType(values.project_type);
-    if (values.base_price) setBasePrice(values.base_price);
-    if (values.lower_limit_rate) setLowerLimitRate(values.lower_limit_rate);
-    if (values.a_value) setAValue(values.a_value);
+    // ⚠ 못 뽑은 필드는 **비운다**. `if (값) set(값)` 로 두면 앞 공고 값이 남는다.
+    //   실제로 조경 공고 뒤에 건축 공고를 붙여넣었을 때 공종이 "조경" 으로
+    //   남아 엉뚱한 분포를 조회했다. 조용히 틀리는 쪽이라 더 위험하다.
+    setBidNoticeId(values.bid_notice_id ?? "");
+    setClientName(values.client_name ?? "");
+    setRegion(values.region ?? "");
+    setProjectType(values.project_type ?? "");
+    setBasePrice(values.base_price ?? "");
+    setLowerLimitRate(values.lower_limit_rate ?? "");
+    setAValue(values.a_value ?? "");
     setParsedFields(filledLabels);
     setAValueMissing(aValueMissing);
   };
