@@ -119,7 +119,9 @@ class G2BCollector:
             except Exception:
                 skip_count += 1
         if skip_count:
-            logger.debug(f"bssAmt/fnlSucsfAmt 없음으로 {skip_count}건 스킵")
+            logger.debug(
+                f"bssAmt/fnlSucsfAmt/sucsfLwstlmtRt 없음 또는 대상 공종 아님으로 {skip_count}건 스킵"
+            )
         return records
 
     # 일일/월별 트래픽 한도 초과 코드 (공공데이터포털 공통)
@@ -331,8 +333,14 @@ class QuotaExceededError(RuntimeError):
         winner_price = int(fnl_sucsf_amt)
 
         # sucsfLwstlmtRt: API는 % 단위 (예: 89.745) → /100 변환
-        raw_rate = Decimal(str(raw.get("sucsfLwstlmtRt") or "87.745"))
-        lower_limit_rate = raw_rate / 100
+        #
+        # 기본값을 두지 않는다. 낙찰하한율은 구간·계약법·개정시점에 따라 달라지는 값이라
+        # 임의 상수를 채우면 조용히 오염된 행이 DB에 들어간다.
+        # (2025-07-08 지방계약 / 2026-01-30 국가계약 +2%p 상향으로 87.745%는 이미 옛 값)
+        sucsf_lwstlmt_rt = raw.get("sucsfLwstlmtRt")
+        if not sucsf_lwstlmt_rt:
+            raise ValueError(f"sucsfLwstlmtRt 없음: {bid_ntce_no}")
+        lower_limit_rate = Decimal(str(sucsf_lwstlmt_rt)) / 100
 
         client_name = raw.get("dmndInsttNm", "알 수 없음")
         notice = notice_map.get(bid_ntce_no, {})

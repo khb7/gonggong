@@ -61,7 +61,7 @@ async def calculate_bid(
             client_name="",
             region="",
             project_type="",
-            lower_limit_rate=Decimal("0.87745"),
+            lower_limit_rate=None,
             participants=100,
         )
 
@@ -85,6 +85,8 @@ async def calculate_bid(
     base_price = notice.base_price
     lower_limit_rate = notice.lower_limit_rate
     participants = notice.participants
+    # A값은 G2B 개방표준 API에 항목이 없다 → override로만 들어온다.
+    a_value = 0
     client_name = notice.client_name
     client_id = notice.client_id
     region = normalize_region(notice.region)
@@ -103,6 +105,9 @@ async def calculate_bid(
         if body.overrides.participants is not None:
             participants = body.overrides.participants
             overridden_fields.append("participants")
+        if body.overrides.a_value is not None:
+            a_value = body.overrides.a_value
+            overridden_fields.append("a_value")
         if body.overrides.client_name is not None:
             client_name = body.overrides.client_name
             overridden_fields.append("client_name")
@@ -118,6 +123,18 @@ async def calculate_bid(
         if body.overrides.bid_type is not None:
             bid_type = normalize_bid_type(body.overrides.bid_type)
             overridden_fields.append("bid_type")
+
+    # 낙찰하한율은 추측하지 않는다. 구간·계약법·개정시점마다 다른 값이라
+    # 기본값을 쓰면 그럴듯하지만 틀린 투찰가가 나온다.
+    if lower_limit_rate is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "낙찰하한율을 자동 조회할 수 없습니다. "
+                "공고문의 낙찰하한율을 확인해 '낙찰하한율' 필드에 입력 후 다시 계산하세요. "
+                "(2025-07-08 지방계약 / 2026-01-30 국가계약 개정으로 구간별 하한율이 2%p 상향되었습니다)"
+            ),
+        )
 
     # ── 3. 버킷 분류 ────────────────────────────────────
     bucket_id = ProjectBucket.get_bucket_id(base_price)
@@ -164,6 +181,7 @@ async def calculate_bid(
         predicted_rate=predicted_rate,
         participants=participants,
         mad_val=mad_val,
+        a_value=a_value,
     )
 
     # ── 7. 응답 구성 ────────────────────────────────────
