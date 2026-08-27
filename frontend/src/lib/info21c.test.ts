@@ -78,11 +78,13 @@ describe("parseInfo21cText", () => {
     expect(parseInfo21cText("기초금액  500,000,000").values.base_price).toBeUndefined();
   });
 
-  it("[알려진 한계] 공백이 있는 기관명은 첫 어절만 잡는다", () => {
-    // \S+ 로 뽑기 때문에 "서울특별시 교육청" 이 "서울특별시" 로 잘린다.
-    // 사용자가 폼에서 직접 고칠 수 있어 현재는 그대로 둔다.
+  it("공백이 있는 기관명을 통째로 잡는다", () => {
+    // 예전엔 `\S+` 로 뽑아 "서울특별시" 로 잘렸고, "알려진 한계 — 사용자가
+    // 폼에서 고치면 된다" 로 문서화돼 있었다. 실사용에서 문제가 확인돼 고쳤다:
+    // 발주처가 잘리면 client 레벨 분포 조회가 실제 발주처를 못 찾고
+    // **조용히** 지역 레벨로 떨어진다. 화면에 표시되는 값도 틀린다.
     const { values } = parseInfo21cText("발주기관  서울특별시 교육청");
-    expect(values.client_name).toBe("서울특별시");
+    expect(values.client_name).toBe("서울특별시 교육청");
   });
 });
 
@@ -179,5 +181,44 @@ describe("parseInfo21cText — A값", () => {
 낙찰하한가  289,985,144 원
 `;
     expect(parseInfo21cText(text).values.a_value).toBeUndefined();
+  });
+});
+
+describe("실제 붙여넣기 회귀 — 안산시 상록구 예초공사 (2026-08-28)", () => {
+  // info21c 공고 상세를 Ctrl+A/C 한 실제 텍스트. 표가 평문으로 흘러
+  // 값이 탭 뒤 또는 다음 줄에 온다.
+  const REAL = [
+    "2026년 상록구 하반기 도로변 예초 및 수목전정 공사(3구역) [(안산시)]관내수의기초A값",
+    "기본정보",
+    "업종\t조경(식재.시설물)[대],조경식재\t공고번호\tR26BK01702409-000",
+    "상세업종\t(4993) 조경식재.시설물공사업[대]",
+    "지역\t경기\t발주기관\t",
+    "경기도 안산시 상록구",
+    "수요기관\t경기도 안산시 상록구\t계약방법\t수의",
+    "예가방법\t복수예가:4(추첨예가)/15(총예가)",
+    "예가변동폭\t-3 ~ +3\t낙찰하한율\t89.745%",
+    "A값",
+    "",
+    "5,215,373 원\t",
+    "기초금액\t",
+    "32,350,000 원",
+    "추정가격\t29,409,091 원",
+  ].join("\n");
+
+  it("발주기관을 공백 포함해 통째로 잡는다", () => {
+    // `\S+` 로 잡던 시절엔 "경기도" 만 남아 client 레벨 분포가 조용히
+    // 지역 레벨로 떨어졌다.
+    expect(parseInfo21cText(REAL).values.client_name).toBe("경기도 안산시 상록구");
+  });
+
+  it("나머지 필드도 그대로 채운다", () => {
+    const { values, aValueMissing } = parseInfo21cText(REAL);
+    expect(values.bid_notice_id).toBe("R26BK01702409-000");
+    expect(values.region).toBe("경기");
+    expect(values.project_type).toBe("조경");
+    expect(values.base_price).toBe("32350000");
+    expect(values.lower_limit_rate).toBe("0.89745");
+    expect(values.a_value).toBe("5215373");
+    expect(aValueMissing).toBe(false);
   });
 });

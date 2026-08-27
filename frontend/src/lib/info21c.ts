@@ -71,11 +71,21 @@ export function parseInfo21cText(text: string): ParsedInfo21c {
     values.lower_limit_rate = String(Number((Number(lowerLimit[1]) / 100).toFixed(decimals)));
   }
 
-  const client = text.match(/발주기관\s+(\S+)/);
-  if (client) values.client_name = client[1];
+  // 발주기관은 **공백을 포함한 한 덩어리**다 ("경기도 안산시 상록구").
+  //
+  // `\S+` 로 잡으면 첫 토큰만 남아 "경기도" 가 된다. 그러면 client 레벨
+  // 분포 조회가 실제 발주처를 못 찾고 지역 레벨로 조용히 떨어진다.
+  // info21c 는 표를 평문으로 흘려주므로 값이 탭 뒤 또는 다음 줄에 온다:
+  //
+  //     지역\t경기\t발주기관\t\n경기도 안산시 상록구\n     ← 다음 줄
+  //     수요기관\t경기도 안산시 상록구\t계약방법\t수의     ← 같은 줄, 탭 구분
+  //
+  // 그래서 앞쪽 공백은 모두 건너뛰고 **탭/줄바꿈 전까지** 잡는다.
+  const client = text.match(/발주기관\s+([^\t\n]+)/);
+  if (client) values.client_name = client[1].trim();
 
-  const region = text.match(/지역\s+(\S+)/);
-  if (region) values.region = region[1];
+  const region = text.match(/지역\s+([^\t\n]+)/);
+  if (region) values.region = region[1].trim();
 
   if (/실내건축/.test(text)) values.project_type = "실내건축";
   else if (/조경/.test(text)) values.project_type = "조경";
