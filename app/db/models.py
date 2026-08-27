@@ -59,6 +59,26 @@ class BidsHistory(Base):
         comment="나라장터 공사 분류 코드 (g2b분류)"
     )
 
+    # ── 2026-08-26 추가 (T-011) ──────────────────────────────────────────
+    # 전부 nullable. 재적재 전 기존 행은 NULL 이라 '미판정'과 False 가 구분된다.
+    notice_title: Mapped[str | None] = mapped_column(
+        String(300), nullable=True, comment="공고명 원문 (대괄호 태그의 출처)"
+    )
+    preprice_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 6), nullable=True,
+        comment="사정률 = 예정가격 / 기초금액. adjustment_rate(=낙찰가/기초금액)와 다른 값이다"
+    )
+    est_price: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="예정가격 (원)"
+    )
+    lower_limit_price: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="낙찰하한가 (원). A값 역산에 필요"
+    )
+    has_a_value: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True,
+        comment="[A값] 공고 여부. 낙찰하한가 = (예정가격−A)×하한율 + A 라 offset 의미가 달라진다"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -98,6 +118,34 @@ class BidLicenseType(Base):
     )
     is_primary: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, comment="주력 공종 여부 (주력: 태그)"
+    )
+
+
+class BidTag(Base):
+    """
+    공고명 대괄호 태그.
+
+    Info21c 공고명에는 계약 조건이 대괄호로 붙는다.
+    예) '안성공도 국민임대주택 유지보수공사 [정][실적][공의][A값][순]'
+
+    실측상 참여자 수를 크게 가르는 축이다 (2026-08-26, 13,514건 기준):
+        [시담] 평균  1.0개사 — 경쟁입찰이 아니므로 분포 표본에서 제외해야 한다
+        [현필] 평균  3.1개사 — 현장설명 필수. 진입장벽이 경쟁을 막는다
+        [관내] 평균 67.8개사
+        [순]   평균 895.6개사
+    """
+
+    __tablename__ = "bid_tags"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tag", name="uq_bid_tags_project_tag"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="나라장터 공고 번호"
+    )
+    tag: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True, comment="태그명 (대괄호 제외). 예: A값, 현필, 시담"
     )
 
 
