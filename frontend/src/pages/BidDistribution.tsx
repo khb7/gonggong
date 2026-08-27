@@ -11,6 +11,7 @@ import {
   winRateIsBroader,
   DEFAULT_QUALITY,
   computeLocalPosition,
+  computeMyOffsetPct,
   findWinZone,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
@@ -226,11 +227,17 @@ export default function BidDistribution() {
     ? { x1: winZone.from.toFixed(1) + "%", x2: winZone.to.toFixed(1) + "%" }
     : null;
 
-  // offset → 원화 변환 (표시용)
+  // 입력창 옆 즉시 피드백용 offset.
+  // 「내 offset」 카드와 반드시 같은 값이어야 하므로 같은 헬퍼를 쓴다 —
+  // 예전에 여기서 A값 없이 따로 계산해 같은 화면에 offset 이 두 개 떴다.
   const myOffsetPct = useMemo(() => {
     if (!result || !myBidPrice) return null;
-    const raw = (Number(myBidPrice) / result.base_price - result.lower_limit_rate) * 100;
-    return Math.round(raw * 10) / 10;
+    return computeMyOffsetPct(
+      Number(myBidPrice),
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+    );
   }, [result, myBidPrice]);
 
   return (

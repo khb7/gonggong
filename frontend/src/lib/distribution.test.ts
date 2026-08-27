@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { prepareDistribution, computeLocalPosition } from "@/lib/distribution";
+import {
+  prepareDistribution,
+  computeLocalPosition,
+  computeMyOffsetPct,
+} from "@/lib/distribution";
 import type { OffsetBucket } from "@/lib/api";
 
 // ── 헬퍼 ────────────────────────────────────────────────────────────────
@@ -392,5 +396,48 @@ describe("computeLocalPosition — A값", () => {
     const price = priceAt(-0.7, 0);
     const pos = computeLocalPosition(price, basePrice, llr, bins, basePrice * 2)!;
     expect(pos.offset_pct).toBeCloseTo(-0.7, 10);
+  });
+});
+
+describe("computeMyOffsetPct — 배지와 카드가 같은 값을 써야 한다", () => {
+  const basePrice = 800_000_000;
+  const llr = 0.87745;
+
+  it("A값을 반영한다", () => {
+    const a = 30_000_000;
+    // 낙찰하한가 = (기초금액 − A) × 하한율 + A
+    const floor = (basePrice - a) * llr + a;
+    expect(computeMyOffsetPct(floor, basePrice, llr, a)).toBeCloseTo(0, 1);
+  });
+
+  it("A값을 빼먹으면 오른쪽으로 밀린다 — 실제로 났던 버그", () => {
+    const a = 30_000_000;
+    const price = 706_000_000;
+    const withA = computeMyOffsetPct(price, basePrice, llr, a)!;
+    const withoutA = computeMyOffsetPct(price, basePrice, llr, 0)!;
+
+    // 화면에 offset 이 0.0% 와 +0.5% 두 개로 떴던 그 차이다
+    expect(withA).toBeCloseTo(0.0, 1);
+    expect(withoutA).toBeCloseTo(0.5, 1);
+  });
+
+  it("computeLocalPosition 과 값이 일치한다", () => {
+    const a = 30_000_000;
+    const price = 706_000_000;
+    const bins = Array.from({ length: 61 }, (_, i) => ({
+      offset_pct: Math.round((i - 30) * 10) / 100,
+      count: 10,
+      win_count: 1,
+      historical_win_rate: 10,
+    }));
+    const badge = computeMyOffsetPct(price, basePrice, llr, a);
+    const card = computeLocalPosition(price, basePrice, llr, bins, a);
+    expect(card).not.toBeNull();
+    expect(badge).toBe(card!.offset_pct);
+  });
+
+  it("투찰가나 기초금액이 없으면 null", () => {
+    expect(computeMyOffsetPct(0, basePrice, llr, 0)).toBeNull();
+    expect(computeMyOffsetPct(700_000_000, 0, llr, 0)).toBeNull();
   });
 });

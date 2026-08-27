@@ -142,6 +142,38 @@ export interface LocalPosition {
  * bins 는 prepareDistribution() 의 결과를 넘긴다.
  * 표시 범위 밖이면 null 을 반환한다 (참여 0건인 구간은 null 이 아니다).
  */
+/** A값이 예정가격(≈기초금액) 이상이면 이상값 — 0 으로 무시한다. */
+function normalizeAValue(aValue: number, basePrice: number): number {
+  return aValue > 0 && aValue < basePrice ? aValue : 0;
+}
+
+/**
+ * 내 투찰가의 offset (%). 분포 x축과 같은 축 위에 놓는다.
+ *
+ *     offset ≈ (투찰금액 − A) / (기초금액 − A) − 법정하한율
+ *
+ * **A값을 빼지 않으면 A값 크기만큼 오른쪽으로 밀린다.** 기초금액 8억 / A값 3천만이면
+ * +0.5%p 어긋나는데, bin 해상도가 0.1% 라 5칸이나 밀린 자리에 표시된다.
+ *
+ * 화면 두 곳(입력창 옆 배지, 「내 offset」 카드)이 같은 값을 써야 하므로
+ * 여기 한 곳에서만 계산한다. 예전에 배지 쪽이 A값 없이 따로 계산해
+ * 같은 화면에 offset 이 두 개(+0.5% vs 0.0%) 뜬 적이 있다.
+ *
+ * `computeLocalPosition()` 과 달리 표시 범위 밖이어도 값을 돌려준다 —
+ * 범위를 벗어났다는 사실 자체를 사용자에게 알려야 하기 때문이다.
+ */
+export function computeMyOffsetPct(
+  myBidPrice: number,
+  basePrice: number,
+  lowerLimitRate: number,
+  aValue: number = 0,
+): number | null {
+  if (!(myBidPrice > 0) || !(basePrice > 0)) return null;
+  const a = normalizeAValue(aValue, basePrice);
+  const adjustedRate = (myBidPrice - a) / (basePrice - a);
+  return Math.round((adjustedRate - lowerLimitRate) * 1000) / 10;
+}
+
 export function computeLocalPosition(
   myBidPrice: number,
   basePrice: number,
@@ -151,11 +183,9 @@ export function computeLocalPosition(
 ): LocalPosition | null {
   if (!bins.length || myBidPrice <= 0 || basePrice <= 0) return null;
 
-  // A값이 예정가격(≈기초금액) 이상이면 이상값 — 무시하고 A값 없이 계산한다
-  const a = aValue > 0 && aValue < basePrice ? aValue : 0;
-
-  const adjustedRate = (myBidPrice - a) / (basePrice - a);
-  const myOffsetPct = Math.round((adjustedRate - lowerLimitRate) * 1000) / 10;
+  const a = normalizeAValue(aValue, basePrice);
+  const myOffsetPct = computeMyOffsetPct(myBidPrice, basePrice, lowerLimitRate, aValue);
+  if (myOffsetPct === null) return null;
   const key = toKey(myOffsetPct);
 
   const matching = bins.find((b) => toKey(b.offset_pct) === key);
