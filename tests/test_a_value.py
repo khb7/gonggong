@@ -335,3 +335,47 @@ def test_my_position_ignores_a_value_above_base_price():
     pos = calc_my_position(price, base, llr, _bins(-0.7), base * 2)
     assert pos is not None
     assert pos["offset_pct"] == pytest.approx(-0.7)
+
+
+# ── 투찰 유효 조건 (부호 규약) ─────────────────────────────────
+
+
+def test_bid_is_valid_only_when_assumed_rate_exceeds_actual():
+    """내가 건 사정률이 실제보다 **높아야** 유효하다.
+
+    투찰가 ≥ 실제 낙찰하한가 이어야 하는데, 양쪽 모두
+    `(기초금액 × 사정률 − A) × r + A` 꼴이므로 부등식이 사정률 비교로 줄어든다:
+
+        (기초×c − A)·r + A  ≥  (기초×실제 − A)·r + A   ⟺   c ≥ 실제
+
+    이 부호를 뒤집으면 "낮게 걸수록 유효" 라는 정반대 결론이 나온다.
+    실제로 한 번 뒤집어 계산해 최적 사정률을 100.05 로 잘못 잡았다
+    (정정값 100.15). 자사 투찰 151건에서 151/151 로 확인된 규약이다.
+    """
+    base, a, r = 800_000_000, 30_000_000, Decimal("0.87745")
+
+    def floor_at(rate: Decimal) -> int:
+        expected = int(Decimal(base) * rate)
+        return bid_price_with_a_value(expected, a, r)
+
+    actual = floor_at(Decimal("1.0010"))          # 실제 사정률 100.10%
+
+    # 높게 걸면 유효 (내 투찰가가 실제 하한가 이상)
+    assert floor_at(Decimal("1.0015")) >= actual
+    # 낮게 걸면 무효
+    assert floor_at(Decimal("1.0005")) < actual
+    # 정확히 맞히면 경계에서 유효
+    assert floor_at(Decimal("1.0010")) >= actual
+
+
+def test_fixed_preprice_rate_sits_above_market_median():
+    """고정 사정률은 실제 사정률 중앙값보다 위여야 한다.
+
+    아래로 두면 절반 넘게 하한 미달로 실격한다 — 실측 무효율 67% 가 그 상태였다.
+    """
+    from app.api.v1.bidding import FIXED_PREPRICE_RATE
+
+    # 자사 투찰 151건의 실제 사정률 중앙값 100.1059%
+    assert FIXED_PREPRICE_RATE > Decimal("1.001059")
+    # 그렇다고 너무 높으면 유효하기만 하고 낙찰선에서 멀어진다 (c=100.5 → 근접 6건)
+    assert FIXED_PREPRICE_RATE < Decimal("1.003")
