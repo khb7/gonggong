@@ -9,7 +9,13 @@ from decimal import Decimal
 from sqlalchemy import select, func, or_, exists, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidParticipants, BidsHistory, BidLicenseType
+from app.db.models import (
+    BidParticipants,
+    BidsHistory,
+    BidLicenseType,
+    OffsetHistogram,
+    OffsetScopeStat,
+)
 from app.db.crud import TARGET_BID_TYPE, TARGET_PRICE_METHOD, _bucket_filter
 from app.engine import distribution_cache
 
@@ -148,6 +154,59 @@ def _scope_conditions(
     return conditions, needs_license
 
 
+def scope_key_for(level: str, label: str | None, bucket_id: int | None) -> str:
+    """사전계산 표의 scope_key 를 만든다.
+
+    빌더(scripts/build_offset_histogram.py)와 조회가 **같은 함수**를 써야 한다.
+    양쪽이 다른 규칙으로 키를 만들면 표는 채워져 있는데 조회가 못 찾고,
+    조용히 느린 실시간 경로로 떨어진다 — 증상이 "가끔 느림" 이라 잡기 어렵다.
+    """
+    if level == "type_bucket":
+        return f"{label}:{bucket_id}"
+    return label or ""
+
+
+async def get_precomputed_distribution(
+    db: AsyncSession, level: str, key: str
+) -> list[dict] | None:
+    """사전계산된 히스토그램. 없으면 None."""
+    rows = (
+        await db.execute(
+            select(
+                OffsetHistogram.offset_pct,
+                OffsetHistogram.count,
+                OffsetHistogram.win_count,
+            )
+            .where(
+                OffsetHistogram.scope_level == level,
+                OffsetHistogram.scope_key == key,
+            )
+            .order_by(OffsetHistogram.offset_pct)
+        )
+    ).fetchall()
+    if not rows:
+        return None
+    return [
+        {"offset_pct": float(r.offset_pct), "count": int(r.count), "win_count": int(r.win_count)}
+        for r in rows
+    ]
+
+
+async def get_precomputed_scope_stat(
+    db: AsyncSession, level: str, key: str
+) -> tuple[int, int] | None:
+    """사전계산된 (공고 수, 참여자 수). 없으면 None."""
+    row = (
+        await db.execute(
+            select(OffsetScopeStat.notices, OffsetScopeStat.bids).where(
+                OffsetScopeStat.scope_level == level,
+                OffsetScopeStat.scope_key == key,
+            )
+        )
+    ).first()
+    return (int(row.notices), int(row.bids)) if row else None
+
+
 async def get_offset_distribution(
     db: AsyncSession,
     *,
@@ -284,6 +343,24 @@ async def get_offset_distribution_cached(
     cached = distribution_cache.get(key)
     if cached is not None:
         return cached
+
+    # 사전계산 표 우선. 특히 글로벌은 실시간 스캔이 69초라(서버 실측)
+    # 낙찰 빈도용으로 매 요청 부르는 이 경로가 그대로면 사용자가 못 쓴다.
+    level = (
+        "global" if not (client_name or region or project_type)
+        else "region" if region and not client_name
+        else "type_bucket" if project_type and not (client_name or region)
+        else "client"
+    )
+    if level != "client":
+        label = None if level == "global" else (region or project_type)
+        pre = await get_precomputed_distribution(
+            db, level, scope_key_for(level, label, bucket_id)
+        )
+        if pre is not None:
+            distribution_cache.set(key, pre)
+            return pre
+
     rows = await get_offset_distribution(
         db,
         client_name=client_name,
@@ -323,18 +400,36 @@ async def resolve_offset_distribution(
             {"project_type": project_type, "bucket_id": bucket_id},
         ))
 
+    candidates.append((_GLOBAL_SCOPE_KEY, None, {}))
+
     for level, label, kwargs in candidates:
+        skey = scope_key_for(level, label, bucket_id)
+
+        # 사전계산 표를 먼저 본다. 넓은 스코프는 실시간 스캔이 수십 초라
+        # (서버 실측 region 22.3s / global 69.1s) 이 경로가 사실상 필수다.
+        stat = await get_precomputed_scope_stat(db, level, skey)
+        if stat is not None:
+            notices, bids = stat
+            if level != _GLOBAL_SCOPE_KEY and notices < _MIN_DIST_NOTICES:
+                continue
+            bins = await get_precomputed_distribution(db, level, skey)
+            if bins is not None:
+                return bins, DistributionScope(
+                    level=level, label=label, notices=notices, bids=bids
+                )
+
         notices, bids = await count_offset_distribution(db, **kwargs)
-        if notices < _MIN_DIST_NOTICES:
+        if level != _GLOBAL_SCOPE_KEY and notices < _MIN_DIST_NOTICES:
             continue
-        rows = await get_offset_distribution_cached(
+        bins = await get_offset_distribution_cached(
             db, **kwargs, _cache_key_override=_cache_key(level, label, bucket_id)
         )
-        return rows, DistributionScope(level=level, label=label, notices=notices, bids=bids)
+        return bins, DistributionScope(level=level, label=label, notices=notices, bids=bids)
 
-    rows = await get_offset_distribution_cached(db)
+    # candidates 마지막이 글로벌이라 여기 도달하지 않는다. 방어적으로만 남긴다.
+    bins = await get_offset_distribution_cached(db)
     notices, bids = await count_offset_distribution(db)
-    return rows, DistributionScope(
+    return bins, DistributionScope(
         level=_GLOBAL_SCOPE_KEY, label=None, notices=notices, bids=bids
     )
 

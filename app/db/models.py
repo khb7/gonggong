@@ -211,6 +211,65 @@ class BidParticipants(Base):
     )
 
 
+class OffsetHistogram(Base):
+    """사전 계산된 offset 히스토그램.
+
+    참여자 4.5M 행을 요청마다 스캔하면 RAM 1GB 서버(OCI E2.1.Micro)가
+    스래싱으로 멈춘다. 실제로 한 번 멈췄다. SQL 집계로 메모리는 해결됐지만
+    속도가 남는다 (서버 실측: client 0.6s / region 22.3s / global 69.1s).
+
+    넓은 스코프는 값이 자주 바뀌지 않으므로 미리 계산해 둔다.
+    `scripts/build_offset_histogram.py` 가 채우고, 조회는 이 표를 먼저 본다.
+
+    client 레벨은 넣지 않는다 — 0.6s 로 충분히 빠르고 발주처 종류가 많다.
+
+    규모: 159 스코프(global 1 + region 18 + type_bucket 140) × 평균 300 bin
+          ≈ 48,000 행.
+    """
+
+    __tablename__ = "offset_histogram"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_level", "scope_key", "offset_pct", name="uq_offset_histogram_bin"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_level: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True,
+        comment='"global" | "region" | "type_bucket"',
+    )
+    scope_key: Mapped[str] = mapped_column(
+        String(120), nullable=False,
+        comment='global="" / region="경기" / type_bucket="조경:2"',
+    )
+    offset_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, comment="bin 중심 offset (%, 0.1 단위)"
+    )
+    count: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여 건수")
+    win_count: Mapped[int] = mapped_column(Integer, nullable=False, comment="낙찰 건수")
+
+
+class OffsetScopeStat(Base):
+    """사전 계산된 스코프별 공고 수·참여자 수.
+
+    fallback 레벨 채택은 참여자 행 수가 아니라 **공고 수** 로 판단한다
+    (공고 1건에 수백 명이 참여하므로 행 수로 재면 한 건이 분포로 둔갑한다).
+    그 판단을 하려면 스코프마다 세어야 하는데, 그 COUNT 쿼리도 넓은 스코프에서는
+    수십 초가 걸린다. 그래서 히스토그램과 함께 미리 계산해 둔다.
+    """
+
+    __tablename__ = "offset_scope_stat"
+
+    scope_level: Mapped[str] = mapped_column(String(20), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    notices: Mapped[int] = mapped_column(Integer, nullable=False, comment="공고 수")
+    bids: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여자 행 수")
+    built_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class BidPreliminaryPrice(Base):
     """
     복수예비가격 15개 데이터.

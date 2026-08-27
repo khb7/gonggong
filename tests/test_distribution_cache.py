@@ -21,6 +21,20 @@ def clear_cache():
     cache.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def no_precomputed():
+    """사전계산 표는 "비어 있음" 으로 둔다.
+
+    이 파일은 캐시와 fallback 결정 로직만 본다. db 가 AsyncMock 이라
+    사전계산 조회가 실제 SQL 을 타면 코루틴이 그대로 흘러 터진다.
+    사전계산 경로 자체는 tests/test_distribution_precompute.py 에서 검증한다.
+    """
+    with patch("app.db.crud_distribution.get_precomputed_distribution",
+               AsyncMock(return_value=None)),          patch("app.db.crud_distribution.get_precomputed_scope_stat",
+               AsyncMock(return_value=None)):
+        yield
+
+
 # ── get / set ─────────────────────────────────────────────────
 
 def test_cache_miss_returns_none():
