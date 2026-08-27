@@ -1,5 +1,19 @@
 # Statistical Engine 구현 계획
 
+> ## ⛔ 폐기된 문서 (2026-08-27)
+>
+> `사정률 예측 → 투찰가 산출` 파이프라인 구현 계획이다. 그 파이프라인이 폐기됐다.
+> 사정률은 복수예비가격 구조상 예측 대상이 아니다.
+> 근거: [2026-05-29-distribution-engine-analysis.md](../design/2026-05-29-distribution-engine-analysis.md)
+>
+> - `Aggressive: -MAD` (113·274행) — 음수 offset 은 **하한가 미달 = 실격**이다
+> - 투찰 공식에 A값이 없다
+>
+> 현재 주 경로는 `POST /bid/distribution` 이다.
+> 대신 볼 문서: 루트 `CLAUDE.md`, [공공입찰_제도_가이드.md](../reference/공공입찰_제도_가이드.md)
+
+---
+
 통계 기반 투찰가 계산 엔진을 Python + PostgreSQL + FastAPI로 구현한다.  
 핵심은 `사정률 예측 → 투찰가 산출` 파이프라인이며, DB 없이도 단위 테스트가 가능한 구조로 설계한다.
 

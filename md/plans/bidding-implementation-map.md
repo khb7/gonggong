@@ -1,5 +1,19 @@
 # 입찰 모델 구현 매핑 가이드 (Bidding Implementation Map)
 
+> ## ⛔ 폐기된 문서 (2026-08-27)
+>
+> 이 문서는 `md/reference/공공입찰.md`(역시 폐기)의 10단계 사정률 예측 로직을
+> 코드에 매핑한 가이드다. 매핑 대상 자체가 폐기되거나 동결됐다.
+>
+> - `app/data/fallback.py`, `app/engine/calculator.py`, `app/engine/strategy.py` — 동결·deprecated
+> - 4절 `Aggressive Bid (-MAD)` — 음수 offset 은 **하한가 미달 = 실격**이다
+> - 본문의 `md/공공입찰.md` 경로는 `md/reference/공공입찰.md` 로 옮겨졌다
+>
+> 현재 주 경로는 `POST /bid/distribution` 이다.
+> 대신 볼 문서: 루트 `CLAUDE.md`, [bid_rate_definitions.md](../design/bid_rate_definitions.md)
+
+---
+
 이 문서는 `md/공공입찰.md`에 정의된 10단계 투찰 로직이 실제 프로젝트의 어떤 코드 파일과 함수에 대응되는지 정리한 매핑 가이드입니다.
 
 ---

@@ -29,25 +29,31 @@ def select_strategy(participants: int) -> str:
 def select_center_offset(strategy: str, mad_val: Decimal) -> Decimal:
     """
     전략에 따른 중심 Offset 값을 반환한다.
-    Ref: 공공입찰.md - 7. 전략 모드 (Strategy Mode)
 
-    - safe       → +MAD  (상단 안전 투찰)
-    - normal     →  0    (중앙 투찰)
-    - aggressive → -MAD  (하단 공격 투찰)
+    - safe       → +MAD
+    - normal     →  0
+    - aggressive → +MAD
+
+    offset 은 `combined_rate = 낙찰하한율 + offset` 으로 쓰인다.
+    따라서 **음수 offset 은 낙찰하한가 아래 투찰을 뜻하고, 그건 곧 실격이다.**
+    설계 초안(공공입찰.md 7절)의 "aggressive = -MAD (하단 공격 투찰)" 은
+    이 제약을 반영하지 못한 값이라 +MAD 로 정정됐다.
+
+    그 결과 현재 safe 와 aggressive 는 같은 값을 돌려준다. 하한선 위로
+    얼마나 띄울지에 대한 전략 차이는 아직 정해지지 않았다.
+    (`select_strategy()` 도 항상 "aggressive" 를 반환하므로 실사용 경로는 하나뿐이다.)
+    실제 타점 선택은 분포 기반 화면(`/bid/distribution`)으로 옮겨가는 중이다.
 
     Args:
         strategy: 전략명 ("safe" | "normal" | "aggressive")
         mad_val: MAD 값 (Decimal)
 
     Returns:
-        중심 Offset (Decimal)
+        중심 Offset (Decimal). 하한 미달을 막기 위해 항상 0 이상.
     """
-    if strategy == "safe":
+    if strategy in ("safe", "aggressive"):
         return mad_val
-    elif strategy == "aggressive":
-        return mad_val
-    else:
-        return Decimal("0")
+    return Decimal("0")
 
 
 # ──────────────────────────────────────────────────────────────

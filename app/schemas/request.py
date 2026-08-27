@@ -17,6 +17,14 @@ class BidOverrides(BaseModel):
         None, description="낙찰하한율 (예: 0.87745)", gt=0, lt=1
     )
     participants: int | None = Field(None, description="참여 업체 수", gt=0)
+    a_value: int | None = Field(
+        None,
+        description=(
+            "A값 (원). 투찰율 적용에서 제외되는 법정경비 합계. "
+            "공고문에 공개되며, 0이 아니면 낙찰하한가가 (예정가격−A)×하한율+A 로 올라간다."
+        ),
+        ge=0,
+    )
     client_name: str | None = Field(None, description="발주처명 (예: 부산광역시)")
     client_id: str | None = Field(None, description="나라장터 발주청 코드 (예: 6110000)")
     region: str | None = Field(None, description="지역명 (예: 서울, 경기)")

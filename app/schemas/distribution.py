@@ -31,17 +31,31 @@ class MyPositionResponse(BaseModel):
 
 
 class DataQuality(BaseModel):
-    total_bids: int = Field(..., description="분포 계산에 사용된 전체 참여자 수")
-    fallback_level: str = Field(
+    total_bids: int = Field(..., description="분포 계산에 사용된 참여자 수 (선택된 레벨 기준)")
+    distribution_level: str = Field(
         "global",
-        description='분포 데이터 출처 레벨: "client" | "region" | "type_bucket" | "global"',
+        description='막대 높이(count)에 사용된 fallback 레벨: "client" | "region" | "type_bucket" | "global"',
+    )
+    distribution_label: str | None = Field(
+        None, description="해당 레벨의 필터값 (global이면 null)"
+    )
+    sample_notices: int = Field(
+        0, description="선택된 레벨의 공고 수 — 레벨 채택 기준이 되는 값"
+    )
+    win_rate_level: str = Field(
+        "global",
+        description="historical_win_rate 계산에 사용된 레벨. 표본 요구량이 달라 항상 global이다",
+    )
+    win_rate_bids: int = Field(
+        0, description="낙찰 빈도 계산에 사용된 전체 참여자 수"
     )
 
 
 class DistributionResponse(BaseModel):
     bid_notice_id: str
     base_price: int
-    lower_limit_rate: float
+    lower_limit_rate: float = Field(..., description="법정 낙찰하한율 (A값 제외 기준선)")
+    a_value: int = Field(0, description="계산에 반영된 A값 (원). 0이면 A값 없는 공고")
     estimated_participants: int = Field(..., description="이번 공고 예상 참여자 수 (과거 유사 공고 평균)")
     g2b_fetch_status: str = Field(..., description='"ok" | "failed" | "mock"')
     distribution: list[OffsetBucketResponse]

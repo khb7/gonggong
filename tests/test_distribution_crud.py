@@ -16,7 +16,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.session import Base
 from app.db.models import BidsHistory, BidParticipants, BidLicenseType
-from app.db.crud_distribution import get_offset_distribution, get_avg_participants
+from app.db.crud_distribution import (
+    get_offset_distribution,
+    get_avg_participants,
+    resolve_offset_distribution,
+)
 
 
 LOWER_LIMIT = Decimal("0.87745")
@@ -94,7 +98,7 @@ async def test_offset_rows_exclude_dummy_bid_rate(db):
     await _add_participants(db, "P1", ["452586.75392"], rank_from=4)  # 더미
     await db.commit()
 
-    rows, _ = await get_offset_distribution(db, client_name="테스트발주처")
+    rows = await get_offset_distribution(db, client_name="테스트발주처")
 
     assert all(r["bid_rate"] <= Decimal("1.05") for r in rows), (
         f"상한 초과 행이 남았다: {[str(r['bid_rate']) for r in rows]}"
@@ -113,7 +117,7 @@ async def test_offset_rows_exclude_implausibly_low_bid_rate(db):
     await _add_participants(db, "P1", ["0.033"], rank_from=4)  # 자리수 깨짐
     await db.commit()
 
-    rows, _ = await get_offset_distribution(db, client_name="테스트발주처")
+    rows = await get_offset_distribution(db, client_name="테스트발주처")
 
     assert all(r["bid_rate"] >= Decimal("0.5") for r in rows), (
         f"저가 이상치가 남았다: {[str(r['bid_rate']) for r in rows]}"
@@ -131,7 +135,7 @@ async def test_offset_rows_exclude_negative_bid_rate(db):
     await _add_participants(db, "P1", ["-9.46"], rank_from=4)  # 파싱 오류
     await db.commit()
 
-    rows, _ = await get_offset_distribution(db, client_name="테스트발주처")
+    rows = await get_offset_distribution(db, client_name="테스트발주처")
 
     assert all(r["bid_rate"] > Decimal("0") for r in rows), (
         f"음수 행이 남았다: {[str(r['bid_rate']) for r in rows]}"
@@ -189,28 +193,32 @@ async def test_avg_participants_not_weighted_by_license_count(db):
 
 
 # ──────────────────────────────────────────
-# 3. client_id 가 문자열 'None' (죽은 컬럼)
+# 3. client 레벨이 발주처를 실제로 가르는가
 # ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_client_level_ignores_dead_client_id(db):
-    """client_id 가 문자열 'None' 이면 client_name 으로 발주처를 가른다.
+async def test_client_level_isolates_by_client_name(db):
+    """client 레벨이 채택되면 다른 발주처 행이 섞이지 않는다.
 
-    실 DB 는 12,445 행 전부 client_id='None' 이다. 이 값이 truthy 라
-    `client_id == 'None'` 필터가 서면 모든 발주처가 한 덩어리로 매칭된다.
+    발주처를 client_name 으로 가른다. client_id 로 가르면 안 된다 —
+    실 DB 는 12,445 행 전부 client_id='None' 이라 필터가 서면 전 발주처가
+    한 덩어리로 매칭되고 client 레벨이 사실상 global 이 된다.
     """
-    # client 레벨이 실제로 채택되도록 양쪽 다 _MIN_DIST_SAMPLE(200) 을 넘긴다.
-    await _add_notice(db, "MINE", client_name="우리발주처", client_id="None")
-    await _add_participants(db, "MINE", ["0.880"] * 250)
-
-    await _add_notice(db, "OTHER", client_name="남의발주처", client_id="None")
-    await _add_participants(db, "OTHER", ["0.900"] * 300)
+    # 레벨 채택 기준은 참여자 행 수가 아니라 공고 수(_MIN_DIST_NOTICES=10)다.
+    for i in range(12):
+        await _add_notice(db, f"MINE-{i}", client_name="우리발주처")
+        await _add_participants(db, f"MINE-{i}", ["0.880"] * 20)
+    for i in range(12):
+        await _add_notice(db, f"OTHER-{i}", client_name="남의발주처")
+        await _add_participants(db, f"OTHER-{i}", ["0.900"] * 20)
     await db.commit()
 
-    rows, level = await get_offset_distribution(
-        db, client_name="우리발주처", client_id="None", project_type="조경", bucket_id=3
+    rows, scope = await resolve_offset_distribution(
+        db, "우리발주처", "경기", "조경", 3
     )
 
+    assert scope.level == "client"
+    assert scope.label == "우리발주처"
     assert all(r["bid_rate"] == Decimal("0.880") for r in rows), (
-        "다른 발주처 행이 섞였다 — client_id='None' 이 필터로 섰다"
+        "다른 발주처 행이 섞였다 — client 레벨이 발주처를 못 가른다"
     )

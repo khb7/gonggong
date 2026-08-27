@@ -2,17 +2,25 @@
 
 ## 프로젝트 개요
 
-나라장터(G2B) 공공입찰 데이터를 기반으로 **사정률을 예측하고 투찰가를 계산**하는 FastAPI 백엔드.
+나라장터(G2B) 공공입찰 데이터를 기반으로 **경쟁자 투찰 분포를 보여주는 의사결정 도구**.
 실내건축·조경 공종을 주 대상으로 한다.
 
-핵심 흐름:
+> ⚠️ **사정률 예측은 폐기됐다.** 사정률은 복수예비가격 구조상 다수 입찰자의
+> 번호 선택 결과라 예측 대상이 아니다(avg≈1.0, std≈0.007).
+> 현재 방향은 **과거 참여자 분포 위에 내 위치를 얹어 보여주는 것**이다.
+> 근거: `md/design/2026-05-29-distribution-engine-analysis.md`
+
+핵심 흐름 (주 경로):
 ```
-POST /api/v1/bid/calculate
-  → G2B API (공고 1건 조회: 기초금액, 하한율, 발주처, 지역)
-  → bids_history 에서 Fallback 기반 사정률 데이터 조회
-  → Trimmed Median + MAD 통계 계산
-  → Multi-Shot Bid Spread (Aggressive / Normal / Safe 3가지 투찰가)
+POST /api/v1/bid/distribution
+  → 공고 정보 (기초금액, 법정 하한율, A값, 발주처, 지역)
+  → bid_participants 에서 과거 참여자 offset 분포 조회
+     (발주처 → 지역 → 공종+버킷 → 전체 순 fallback, 채택 기준은 공고 수)
+  → offset 히스토그램 + 낙찰 집중 구간 + 내 투찰가 위치
 ```
+
+`POST /api/v1/bid/calculate` (사정률 기반 투찰가 계산)은 **동결 상태**로 유지된다.
+신규 기능은 여기에 붙이지 않는다.
 
 ---
 
@@ -20,17 +28,34 @@ POST /api/v1/bid/calculate
 
 | 용어 | 설명 |
 |------|------|
-| **기초금액** (base_price) | 발주처가 내부적으로 설정한 예정가격의 기준 금액 (원) |
-| **낙찰하한율** (lower_limit_rate) | 예정가격 대비 입찰 가능한 최저 비율 (예: 0.87745) |
-| **사정률** (adjustment_rate) | 실제 낙찰가 ÷ 기초금액 (예: 0.899) |
-| **예정가격** | 개찰 시 공개되는 실제 낙찰 기준가. = base_price × predicted_rate |
-| **Fallback** | 발주처→지역→공종+버킷→전체 순으로 통계 데이터를 조회하는 계층형 로직. 각 레벨 최소 20건 필요 |
+| **기초금액** (base_price) | 발주처가 공개하는 예정가격 기준선 (원) |
+| **예정가격** | 개찰 시 확정되는 실제 낙찰 기준가. 복수예비가격 15개 중 4개 평균 |
+| **사정률** (adjustment_rate) | 예정가격 ÷ 기초금액. 제도가 만들어내는 난수에 가깝다 |
+| **법정 낙찰하한율** (legal_limit_rate) | 예정가격 대비 투찰 가능한 최저 비율. **A값 제외 기준선** (2026 현행: 10억 미만 공사 0.89745) |
+| **실효 낙찰하한율** (effective_limit_rate) | 낙찰하한가 ÷ 예정가격. A값이 녹아든 값 |
+| **A값** (a_value) | 투찰율 적용에서 **제외**되는 법정경비 합계 (국민연금·건강보험·산업안전보건관리비 등 7항목) |
+| **투찰율** (bid_rate) | `(투찰금액 − A) / (예정가격 − A)`. **원본이 이미 A값을 뺀 조정값이다** |
+| **offset** | `투찰율 − 법정 하한율`. 분포 히스토그램의 x축 |
+| **Fallback** | 발주처→지역→공종+버킷→전체 순 계층 조회. 채택 기준은 참여자 행 수가 아니라 **공고 수** |
 | **버킷** (bucket_id) | 기초금액 구간 분류 (1: ~1억, 2: 1억~5억, 3: 5억~20억, 4: 20억+) |
 
-투찰가 공식:
+### 낙찰하한가 산식 (반드시 A값 포함)
+
 ```
-최종 투찰가 = base_price × predicted_rate × (lower_limit_rate + offset)
+낙찰하한가 = (예정가격 − A값) × 법정하한율 + A값
+투찰가     = (예정가격 − A값) × (법정하한율 + offset) + A값
 ```
+
+A값을 빼먹고 `예정가격 × 하한율`로 계산하면 **하한가 미달로 부적격 탈락**한다.
+실측상 건축공사 공고의 **70%가 A값 공고**다 (A값 비중 평균 3.71%).
+
+### 하지 말아야 할 것
+
+- **낙찰하한율에 기본값을 채우지 않는다.** 구간·계약법·개정시점마다 다른 값이라,
+  모르면 `None` 으로 두고 실패시킨다. `0.87745` 하드코딩이 과거 데이터 오염의 근본 원인이었다.
+- **offset 기준선은 법정 하한율이다.** 실효 하한율로 재면 A값이 이중 차감된다.
+
+상세: `md/reference/공공입찰_제도_가이드.md`, `md/design/bid_rate_definitions.md`
 
 ---
 
@@ -38,30 +63,45 @@ POST /api/v1/bid/calculate
 
 ```
 app/
-├── api/v1/bidding.py       # POST /bid/calculate 엔드포인트
+├── api/v1/
+│   ├── distribution.py     # POST /bid/distribution  ← 주 경로
+│   ├── bidding.py          # POST /bid/calculate     ← 동결
+│   ├── stats.py            # 관리 대시보드
+│   └── admin.py            # CSV 업로드
 ├── core/config.py          # 환경변수 설정 (DATABASE_URL, G2B_API_KEY)
-├── data/fallback.py        # 계층형 Fallback 로직 (client→region→bucket→global)
+├── data/fallback.py        # (deprecated) 사정률 계층 fallback
 ├── db/
-│   ├── models.py           # BidsHistory, ClientStatistics, ProjectBucket ORM
-│   ├── crud.py             # bids_history 읽기 전용 쿼리
+│   ├── models.py           # BidsHistory, BidParticipants, BidLicenseType, ...
+│   ├── crud_distribution.py# 분포 조회 + fallback 스코프 + 캐시  ← 주 경로
+│   ├── crud.py             # 읽기 전용 / crud_write.py 쓰기
+│   ├── normalize.py        # 공종·지역·입찰방식 정규화
 │   └── session.py          # AsyncSession, Base
 ├── engine/
-│   ├── calculator.py       # 투찰가 계산 (calculate_single, calculate_bid_spread)
+│   ├── distribution.py     # offset 히스토그램, 내 위치 계산  ← 주 경로
+│   ├── a_value.py          # A값 역산·실효 하한율·A값 반영 투찰가
 │   ├── statistics.py       # trimmed_median(), mad()
-│   ├── strategy.py         # select_strategy(), generate_bid_spread()
-│   └── digit_filter.py     # 끝자리 블랙리스트 회피
+│   ├── digit_filter.py     # 끝자리 블랙리스트 회피
+│   ├── calculator.py       # (동결) 투찰가 계산
+│   └── strategy.py         # (동결) select_strategy(), generate_bid_spread()
 ├── external/
-│   └── g2b_fetcher.py      # G2BFetcher (실제), MockG2BFetcher (테스트용)
-└── schemas/
-    ├── request.py          # BidRequest
-    └── response.py         # BidResponse
+│   ├── g2b_fetcher.py      # 단건 공고 조회 (Mock 포함)
+│   └── g2b_collector.py    # 날짜 범위 일괄 수집
+└── schemas/                # request / response / distribution
+
+scripts/
+├── etl_csv.py              # Info21c CSV·XLSX → bids_history (A값 역산 포함)
+├── etl_participants.py     # 참여자 XLS → bid_participants (+ --update-limits)
+├── backfill_a_value.py     # 과거 적재분 A값 역산 (dry-run 기본)
+├── validate_data.py        # 적재 후 품질 검증 (낙찰자 불변식 포함)
+└── backtest.py             # 전략 백테스트
 
 alembic/                    # DB 마이그레이션
 tests/                      # pytest 테스트
 md/                         # 설계 문서
   ├── design/                   # 시스템 설계
-  │   ├── bidding_engine_design.md
-  │   └── bid_participants_design.md
+  │   ├── bid_rate_definitions.md            ★ 투찰률·하한율 기준 (확정)
+  │   ├── 2026-05-29-distribution-engine-analysis.md  ★ 사정률 예측 폐기 근거
+  │   └── bidding_engine_design.md           (폐기 — 사정률 예측 시절)
   ├── data/                     # 데이터 수집 관련
   │   ├── data_collection.md
   │   └── data_collection_fixes.md
@@ -71,6 +111,7 @@ md/                         # 설계 문서
   ├── status/                   # 진행 상황 / 회의록
   │   └── progress.md
   ├── reference/                # 참고 자료
+  │   └── 공공입찰_제도_가이드.md            ★ 제도 규칙 (하한율 개정, A값, 복수예가)
   └── raw/                      # 원본 데이터 파일 (csv, xlsx 등)
 ```
 
@@ -106,7 +147,8 @@ alembic upgrade head
 alembic revision --autogenerate -m "설명"
 ```
 
-테이블: `bids_history`, `client_statistics`, `project_bucket`
+테이블: `bids_history`, `bid_participants`, `bid_license_types`,
+`bid_preliminary_prices`, `client_statistics`, `project_bucket`
 
 `project_bucket`은 초기 시드 데이터가 필요하다 (금액 구간 4개).
 
@@ -115,12 +157,20 @@ alembic revision --autogenerate -m "설명"
 ## 테스트
 
 ```bash
-pytest
+pytest tests/          # 백엔드
+cd frontend && npx vitest run && npx tsc --noEmit
 ```
+
+⚠️ 인자 없는 `pytest` 는 `logs/*.txt` 수집 단계에서 UnicodeDecodeError 로 죽는다.
+반드시 `pytest tests/` 로 경로를 지정한다.
 
 `pytest.ini`: `asyncio_mode = auto`
 
 테스트 파일별 역할:
+- `test_a_value.py` — A값 역산, 실효 하한율, A값 반영 투찰가·내 위치 (실측값 기반)
+- `test_distribution.py` / `test_distribution_cache.py` — offset 히스토그램, fallback 스코프, 캐시
+- `test_api_distribution.py` — 분포 엔드포인트 통합 테스트
+- `test_spa_path_traversal.py` — SPA 폴백이 dist 밖 파일을 서빙하지 않는지
 - `test_statistics.py` — trimmed_median, mad 순수 계산 검증
 - `test_calculator.py` — 투찰가 계산 로직 검증
 - `test_digit_filter_and_strategy.py` — 끝자리 필터, 전략 선택 검증
@@ -132,8 +182,9 @@ pytest
 
 ## 최종 목표
 
-1. **사정률 예측 정확도 향상** — 발주처 패턴 기반, 100% 상/하 방향성 포함
-2. **투찰 자동화** — 예측 후 나라장터에 직접 투찰 (수동 클릭 없이)
+1. **투찰 위치 판단 근거 제공** — 경쟁자 분포 위에서 내 타점이 어디인지 보여준다.
+   등수의 분산을 줄이는 것이 목표지, 사정률을 맞히는 것이 아니다
+2. **투찰 자동화** — 결정 후 나라장터에 직접 투찰 (수동 클릭 없이)
 3. **낙찰률 3배 향상** — 현재 0.3~0.4% → 목표 1% 이상
 
 ### 주요 타겟 발주처
@@ -145,7 +196,9 @@ pytest
 
 ## 데이터 수집 파이프라인
 
-현재 `bids_history`가 비어있어 fallback이 항상 `"none"` / `predicted_rate: 1.0`을 반환한다.
+현재 `bids_history` 약 18,400행 / `bid_participants` 적재 완료 (2026-08 기준).
+적재 후에는 반드시 `python scripts/validate_data.py` 로 품질을 확인한다.
+특히 **낙찰자 불변식**(낙찰자 투찰율 ≥ 법정 하한율)이 깨지면 하한율이 오염된 것이다.
 
 ### 경로 A: Info21c 자동 다운로드 (주 경로, 구현 완료)
 
@@ -204,7 +257,8 @@ app/
 - 모든 금액은 `int` (원 단위, 소수점 이하 버림)
 - 모든 비율은 `Decimal` (float 부동소수점 오류 방지)
 - G2B API 키 없으면 Mock 자동 전환 — 로컬 개발 시 `.env`의 `G2B_API_KEY` 비워두면 됨
-- `crud.py`는 읽기 전용, 쓰기는 `crud_write.py`(미구현)에서 분리
+- `crud.py`는 읽기 전용, 쓰기는 `crud_write.py`에서 분리
+- 낙찰하한율·A값은 **모르면 채우지 말고 실패시킨다** (위 '하지 말아야 할 것' 참고)
 
 ---
 

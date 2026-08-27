@@ -57,7 +57,9 @@ class G2BNoticeData:
     client_name: str
     region: str
     project_type: str
-    lower_limit_rate: Decimal
+    # None = 공고에서 낙찰하한율을 확인할 수 없음 (미개찰 등).
+    # 임의 상수로 채우지 않는다 — 호출측에서 override를 요구할 것.
+    lower_limit_rate: Decimal | None
     participants: int = DEFAULT_PARTICIPANTS   # 공고 시점 미공개 — 기본값 사용
     bid_notice_no: str = ""
     bid_type: str = "적격심사"       # 입찰방식 (G2B: bidMethdNm)
@@ -120,10 +122,15 @@ class G2BFetcher:
         # 낙찰결과 없음(미개찰) — notice 데이터는 보존, base_price=0으로 반환
         # bidding.py에서 overrides.base_price 없으면 400 에러 처리
         base_price = int(raw_base_price) if raw_base_price else 0
+
+        # 낙찰하한율은 기본값을 두지 않는다.
+        # 구간·계약법·개정시점에 따라 달라지는 값이라 상수를 채우면
+        # 그럴듯하지만 틀린 투찰가가 조용히 나온다.
+        # (2025-07-08 지방계약 / 2026-01-30 국가계약 +2%p 상향으로 87.745%는 이미 옛 값)
+        # None이면 호출측에서 override를 요구한다.
+        sucsf_lwstlmt_rt = scsbid_data.get("sucsfLwstlmtRt")
         lower_limit_rate = (
-            Decimal(str(scsbid_data.get("sucsfLwstlmtRt", "87.745"))) / 100
-            if raw_base_price
-            else Decimal("0.87745")
+            Decimal(str(sucsf_lwstlmt_rt)) / 100 if sucsf_lwstlmt_rt else None
         )
 
         return G2BNoticeData(
@@ -231,6 +238,10 @@ class MockG2BFetcher:
     실제 API 호출 없이 고정 샘플 데이터를 반환한다.
     """
 
+    # 아래 lower_limit_rate 0.87745는 **고정 픽스처 값**이다.
+    # 실제 코드 경로의 기본값이 아니며(그런 기본값은 제거했다),
+    # 2026년 현행 하한율도 아니다 (10억 미만 공사 기준 89.745%).
+    # 기존 테스트가 이 값에 묶여 있어 그대로 둔다.
     _MOCK_DATA: dict[str, G2BNoticeData] = {
         "TEST-001": G2BNoticeData(
             bid_notice_no="TEST-001",

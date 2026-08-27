@@ -6,7 +6,7 @@
   - bids_history.preprice_rate       진짜 사정률 = 예정가격 / 기초금액
   - bids_history.est_price           예정가격 원값
   - bids_history.lower_limit_price   낙찰하한가 원값 (A값 역산에 필요)
-  - bids_history.has_a_value         [A값] 여부. offset 좌표 의미가 달라져 자주 거른다
+  (has_a_value 는 d5c7b39a4e10 이 만든다 — 그쪽 정의가 non-null + index 라 더 낫다)
   - bid_tags                         공고명 대괄호 태그 1:N (bid_license_types 와 같은 패턴)
 
 bid_participants.base_rate / vs_lower_limit 는 54acb1bf74ff 에서 이미 추가돼 있다.
@@ -36,7 +36,6 @@ def upgrade() -> None:
     op.add_column('bids_history', sa.Column('preprice_rate', sa.Numeric(10, 6), nullable=True))
     op.add_column('bids_history', sa.Column('est_price', sa.BigInteger(), nullable=True))
     op.add_column('bids_history', sa.Column('lower_limit_price', sa.BigInteger(), nullable=True))
-    op.add_column('bids_history', sa.Column('has_a_value', sa.Boolean(), nullable=True))
 
     # ── bid_tags ────────────────────────────────────────────────────────────
     op.create_table(
@@ -56,7 +55,6 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_bid_tags_project_id'), table_name='bid_tags')
     op.drop_table('bid_tags')
 
-    op.drop_column('bids_history', 'has_a_value')
     op.drop_column('bids_history', 'lower_limit_price')
     op.drop_column('bids_history', 'est_price')
     op.drop_column('bids_history', 'preprice_rate')

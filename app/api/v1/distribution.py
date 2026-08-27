@@ -5,15 +5,19 @@ POST /api/v1/bid/distribution 엔드포인트
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type
 from app.db.models import ProjectBucket
-from app.db.crud_distribution import get_offset_distribution_cached, get_avg_participants
-from app.engine.distribution import build_offset_distribution, calc_my_position
+from app.db.crud_distribution import (
+    get_offset_distribution_cached,
+    resolve_offset_distribution,
+    get_avg_participants,
+)
+from app.engine.distribution import build_scoped_distribution, calc_my_position
 from app.schemas.distribution import (
     DistributionRequest,
     DistributionResponse,
@@ -57,13 +61,15 @@ async def get_bid_distribution(
             client_name="",
             region="",
             project_type="",
-            lower_limit_rate=Decimal("0.87745"),
+            lower_limit_rate=None,
             participants=0,
         )
 
     # ── 2. Override 적용 ─────────────────────────────────────
     base_price = notice.base_price
     lower_limit_rate = notice.lower_limit_rate
+    # A값은 G2B 개방표준 API에 항목이 없다 → override로만 들어온다.
+    a_value = 0
     client_name = notice.client_name
     region = normalize_region(notice.region)
     project_type = normalize_project_type(notice.project_type) or notice.project_type
@@ -73,6 +79,8 @@ async def get_bid_distribution(
             base_price = body.overrides.base_price
         if body.overrides.lower_limit_rate is not None:
             lower_limit_rate = body.overrides.lower_limit_rate
+        if body.overrides.a_value is not None:
+            a_value = body.overrides.a_value
         if body.overrides.client_name is not None:
             client_name = body.overrides.client_name
         if body.overrides.region is not None:
@@ -80,24 +88,47 @@ async def get_bid_distribution(
         if body.overrides.project_type is not None:
             project_type = normalize_project_type(body.overrides.project_type) or body.overrides.project_type
 
+    # offset 축 전체가 낙찰하한율 기준선 위에서 정의된다.
+    # 값을 모르면 분포도 내 위치도 의미가 없으므로 추측하지 않고 입력을 요구한다.
+    if lower_limit_rate is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "낙찰하한율을 자동 조회할 수 없습니다. "
+                "공고문의 낙찰하한율을 확인해 '낙찰하한율' 필드에 입력 후 다시 조회하세요. "
+                "(2025-07-08 지방계약 / 2026-01-30 국가계약 개정으로 구간별 하한율이 2%p 상향되었습니다)"
+            ),
+        )
+
     bucket_id = ProjectBucket.get_bucket_id(base_price) if base_price > 0 else 1
 
-    # ── 3. 분포 조회 (공고 peer group 기준 계층형 fallback) ───
-    rows, fallback_level = await get_offset_distribution_cached(
-        db, client_name, region, project_type, bucket_id, notice.client_id,
-    )
-    distribution = build_offset_distribution(rows)
-    total_bids = sum(b["count"] for b in distribution)
-
-    # ── 4. 참여자 수 예측 ─────────────────────────────────────
-    estimated_participants = await get_avg_participants(
+    # ── 3. 분포 조회 (발주처 → 지역 → 공종+버킷 → 전체) ──────
+    rows, scope = await resolve_offset_distribution(
         db, client_name, region, project_type, bucket_id
     )
+
+    # 낙찰 빈도는 항상 전체 표본에서 계산한다 (build_scoped_distribution 주석 참고).
+    global_rows = None if scope.level == "global" else await get_offset_distribution_cached(db)
+    distribution = build_scoped_distribution(rows, global_rows)
+
+    total_bids = sum(b["count"] for b in distribution)
+    win_rate_bids = len(global_rows) if global_rows is not None else len(rows)
+
+    # ── 4. 참여자 수 예측 ─────────────────────────────────────
+    # 참여자 평균은 부가 정보다. 여기서 실패해도 분포 응답까지 죽이지 않는다.
+    try:
+        estimated_participants = await get_avg_participants(
+            db, client_name, region, project_type, bucket_id
+        )
+    except Exception:
+        estimated_participants = 0
 
     # ── 5. 내 위치 계산 ───────────────────────────────────────
     my_position_out: MyPositionResponse | None = None
     if body.my_bid_price and base_price > 0:
-        pos = calc_my_position(body.my_bid_price, base_price, lower_limit_rate, distribution)
+        pos = calc_my_position(
+            body.my_bid_price, base_price, lower_limit_rate, distribution, a_value
+        )
         if pos:
             my_position_out = MyPositionResponse(**pos)
 
@@ -107,7 +138,7 @@ async def get_bid_distribution(
             offset_pct=b["offset_pct"],
             count=b["count"],
             win_count=b["win_count"],
-            historical_win_rate=round(b["win_count"] / b["count"] * 100, 2) if b["count"] > 0 else None,
+            historical_win_rate=b["historical_win_rate"],
         )
         for b in distribution
     ]
@@ -116,9 +147,17 @@ async def get_bid_distribution(
         bid_notice_id=body.bid_notice_id,
         base_price=base_price,
         lower_limit_rate=float(lower_limit_rate),
+        a_value=a_value,
         estimated_participants=estimated_participants,
         g2b_fetch_status=g2b_status,
         distribution=distribution_out,
-        data_quality=DataQuality(total_bids=total_bids, fallback_level=fallback_level),
+        data_quality=DataQuality(
+            total_bids=total_bids,
+            distribution_level=scope.level,
+            distribution_label=scope.label,
+            sample_notices=scope.notices,
+            win_rate_level="global",
+            win_rate_bids=win_rate_bids,
+        ),
         my_position=my_position_out,
     )

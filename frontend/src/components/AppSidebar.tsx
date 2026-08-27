@@ -14,8 +14,8 @@ import {
 } from "@/components/ui/sidebar";
 
 const items = [
-  { title: "투찰가 계산", url: "/", icon: Calculator },
-  { title: "분포 분석", url: "/bid-distribution", icon: Activity },
+  { title: "분포 분석", url: "/", icon: Activity },
+  { title: "투찰가 계산", url: "/calculator", icon: Calculator },
   { title: "데이터 현황", url: "/overview", icon: BarChart3 },
   { title: "발주처 통계", url: "/clients", icon: Building2 },
   { title: "사정률 분포", url: "/distribution", icon: TrendingUp },

@@ -34,12 +34,17 @@ export interface BidResult {
   strategy: "safe" | "normal" | "aggressive";
   predicted_rate: number;
   mad_value: number;
+  /** [lower, upper] = predicted_rate ± MAD */
+  prediction_range: [number, number];
+  confidence_grade: "high" | "medium" | "low";
   fallback_level: string;
   bids: {
     label: string;
     rate_pct: number;
     price_krw: number;
-    digit_filter_applied: boolean;
+    /** 백엔드 필드명은 triggered 다. applied 로 읽으면 항상 undefined 가 된다 */
+    digit_filter_triggered: boolean;
+    a_value: number;
   }[];
 }
 
@@ -156,14 +161,35 @@ export interface BidPosition {
   sample_count: number;
 }
 
+/** 분포 계산에 쓰인 fallback 레벨 */
+export type DistributionLevel = "client" | "region" | "type_bucket" | "global";
+
+export interface DistributionQuality {
+  /** 선택된 레벨의 참여자 수 (막대 높이의 합) */
+  total_bids: number;
+  /** 막대 높이(count)에 사용된 레벨 */
+  distribution_level: DistributionLevel;
+  /** 해당 레벨의 필터값. global이면 null */
+  distribution_label: string | null;
+  /** 선택된 레벨의 공고 수 — 레벨 채택 기준 */
+  sample_notices: number;
+  /** 낙찰 빈도 계산에 사용된 레벨. 표본 요구량이 달라 항상 global */
+  win_rate_level: DistributionLevel;
+  /** 낙찰 빈도 계산에 사용된 전체 참여자 수 */
+  win_rate_bids: number;
+}
+
 export interface DistributionResult {
   bid_notice_id: string;
   base_price: number;
+  /** 법정 낙찰하한율 (A값 제외 기준선) */
   lower_limit_rate: number;
+  /** 계산에 반영된 A값 (원). 0이면 A값 없는 공고 */
+  a_value: number;
   estimated_participants: number;
   g2b_fetch_status: string;
   distribution: OffsetBucket[];
-  data_quality: { total_bids: number; fallback_level: string };
+  data_quality: DistributionQuality;
   my_position: BidPosition | null;
 }
 
