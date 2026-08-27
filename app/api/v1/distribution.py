@@ -82,8 +82,10 @@ async def get_bid_distribution(
 
     bucket_id = ProjectBucket.get_bucket_id(base_price) if base_price > 0 else 1
 
-    # ── 3. 분포 조회 ─────────────────────────────────────────
-    rows = await get_offset_distribution_cached(db)
+    # ── 3. 분포 조회 (공고 peer group 기준 계층형 fallback) ───
+    rows, fallback_level = await get_offset_distribution_cached(
+        db, client_name, region, project_type, bucket_id, notice.client_id,
+    )
     distribution = build_offset_distribution(rows)
     total_bids = sum(b["count"] for b in distribution)
 
@@ -117,6 +119,6 @@ async def get_bid_distribution(
         estimated_participants=estimated_participants,
         g2b_fetch_status=g2b_status,
         distribution=distribution_out,
-        data_quality=DataQuality(total_bids=total_bids),
+        data_quality=DataQuality(total_bids=total_bids, fallback_level=fallback_level),
         my_position=my_position_out,
     )

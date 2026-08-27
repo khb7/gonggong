@@ -32,6 +32,10 @@ class MyPositionResponse(BaseModel):
 
 class DataQuality(BaseModel):
     total_bids: int = Field(..., description="분포 계산에 사용된 전체 참여자 수")
+    fallback_level: str = Field(
+        "global",
+        description='분포 데이터 출처 레벨: "client" | "region" | "type_bucket" | "global"',
+    )
 
 
 class DistributionResponse(BaseModel):

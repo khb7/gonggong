@@ -55,7 +55,7 @@ def _call(client, body: dict):
 
 def test_distribution_returns_200(client):
     """기본 요청에서 200과 응답 구조를 반환한다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         resp = _call(client, {"bid_notice_id": "TEST-001"})
 
@@ -64,7 +64,7 @@ def test_distribution_returns_200(client):
 
 def test_distribution_response_fields(client):
     """응답에 필수 필드가 모두 존재한다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -80,7 +80,7 @@ def test_distribution_response_fields(client):
 
 def test_distribution_bins_populated(client):
     """DB rows에서 distribution 목록이 올바르게 생성된다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -92,7 +92,7 @@ def test_distribution_bins_populated(client):
 
 def test_distribution_bin_fields(client):
     """각 bin에 offset_pct, count, win_count, historical_win_rate가 있다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -105,7 +105,7 @@ def test_distribution_bin_fields(client):
 
 def test_distribution_historical_win_rate_value(client):
     """-0.6% bin: count=2, win_count=1 → historical_win_rate=50.0."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -116,7 +116,7 @@ def test_distribution_historical_win_rate_value(client):
 
 def test_distribution_data_quality_total_bids(client):
     """data_quality.total_bids는 전체 참여자 수다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -125,7 +125,7 @@ def test_distribution_data_quality_total_bids(client):
 
 def test_distribution_estimated_participants(client):
     """estimated_participants는 DB에서 조회한 값을 반환한다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=320)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -138,7 +138,7 @@ def test_distribution_estimated_participants(client):
 
 def test_distribution_my_position_none_when_no_price(client):
     """my_bid_price 없으면 my_position은 null이다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 
@@ -151,7 +151,7 @@ def test_distribution_my_position_populated(client):
     # offset -0.6% → bid = 1,000,000,000 × (0.87745 - 0.006) = 871,450,000
     my_bid = int(1_000_000_000 * (0.87745 - 0.006))
 
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid}).json()
 
@@ -169,7 +169,7 @@ def test_distribution_my_position_out_of_range_returns_null(client):
     # 매우 높은 가격 → 분포에 없는 offset
     my_bid = int(1_000_000_000 * (0.87745 + 0.050))
 
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=_MOCK_ROWS)), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=(_MOCK_ROWS, "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=150)):
         data = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid}).json()
 
@@ -182,7 +182,7 @@ def test_distribution_my_position_out_of_range_returns_null(client):
 
 def test_distribution_empty_db(client):
     """DB에 데이터 없으면 distribution은 빈 리스트, my_position은 null이다."""
-    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=[])), \
+    with patch("app.api.v1.distribution.get_offset_distribution_cached", AsyncMock(return_value=([], "global"))), \
          patch("app.api.v1.distribution.get_avg_participants", AsyncMock(return_value=0)):
         data = _call(client, {"bid_notice_id": "TEST-001"}).json()
 

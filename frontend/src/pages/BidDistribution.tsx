@@ -90,6 +90,45 @@ function ChartTooltip({ active, payload, label }: any) {
   );
 }
 
+// ── Fallback 레벨 → 출처 배지 ────────────────────────────────────────────
+// 분포가 어느 범위 데이터에서 나왔는지 노출해 신뢰도를 가늠하게 한다.
+// client(발주처 전용)일수록 신뢰도 높음, global(전국 전체)은 참고용.
+
+const FALLBACK_META: Record<
+  string,
+  { label: string; hint: string; className: string }
+> = {
+  client: {
+    label: "발주처 전용 데이터",
+    hint: "이 발주처의 동일 공종·금액대 과거 입찰 기반 — 신뢰도 높음",
+    className: "border-emerald-500/40 text-emerald-700 bg-emerald-50",
+  },
+  region: {
+    label: "지역 데이터",
+    hint: "같은 지역의 동일 공종·금액대 입찰 기반",
+    className: "border-sky-500/40 text-sky-700 bg-sky-50",
+  },
+  type_bucket: {
+    label: "공종·금액대 데이터",
+    hint: "발주처/지역 표본이 부족해 동일 공종·금액대 전체로 집계",
+    className: "border-amber-500/40 text-amber-700 bg-amber-50",
+  },
+  global: {
+    label: "전국 전체 평균 (참고용)",
+    hint: "해당 조건 표본이 부족해 전국 전체 분포로 대체 — 참고용으로만",
+    className: "border-rose-500/40 text-rose-700 bg-rose-50",
+  },
+};
+
+function FallbackBadge({ level }: { level: string }) {
+  const meta = FALLBACK_META[level] ?? FALLBACK_META.global;
+  return (
+    <Badge variant="outline" className={`text-xs ${meta.className}`} title={meta.hint}>
+      {meta.label}
+    </Badge>
+  );
+}
+
 // ── 레이블 컴포넌트 ──────────────────────────────────────────────────────
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -297,7 +336,8 @@ export default function BidDistribution() {
               <div><span className="text-muted-foreground">기초금액: </span><span className="font-semibold">{formatNumber(result.base_price)}원</span></div>
               <div><span className="text-muted-foreground">낙찰하한율: </span><span className="font-semibold">{(result.lower_limit_rate * 100).toFixed(3)}%</span></div>
               <div><span className="text-muted-foreground">예상 참여자: </span><span className="font-semibold">약 {formatNumber(result.estimated_participants)}명</span></div>
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center gap-2">
+                <FallbackBadge level={result.data_quality.fallback_level} />
                 <Badge variant="outline" className="text-xs text-muted-foreground">
                   데이터 {formatNumber(result.data_quality.total_bids)}건 기반
                 </Badge>

@@ -163,7 +163,7 @@ export interface DistributionResult {
   estimated_participants: number;
   g2b_fetch_status: string;
   distribution: OffsetBucket[];
-  data_quality: { total_bids: number };
+  data_quality: { total_bids: number; fallback_level: string };
   my_position: BidPosition | null;
 }
 
