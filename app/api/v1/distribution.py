@@ -17,6 +17,7 @@ from app.db.crud_distribution import (
     resolve_offset_distribution,
     get_avg_participants,
 )
+from app.engine import contract_law
 from app.engine.distribution import build_scoped_distribution, calc_my_position
 from app.schemas.distribution import (
     DistributionRequest,
@@ -149,6 +150,11 @@ async def get_bid_distribution(
         lower_limit_rate=float(lower_limit_rate),
         a_value=a_value,
         estimated_participants=estimated_participants,
+        # 사정률 산포는 복수예비가격 생성범위(국가 ±2% / 지방 ±3%)가 규정으로
+        # 정해 놓은 값이라 추정하지 않는다. 내 위치 마커가 이 폭만큼 번져 있다는
+        # 사실을 화면에 드러내기 위해 함께 내려보낸다.
+        contract_law=contract_law.classify(client_name),
+        preprice_sd_pct=float(contract_law.preprice_sd(client_name)) * 100,
         g2b_fetch_status=g2b_status,
         distribution=distribution_out,
         data_quality=DataQuality(

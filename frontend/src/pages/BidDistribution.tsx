@@ -25,6 +25,19 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, ChevronDown, ChevronUp, ClipboardPaste } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
+/**
+ * 발주처 적용 계약법 라벨.
+ *
+ * 복수예비가격 생성범위가 규정으로 정해져 있어(국가계약 ±2% / 지방계약 ±3%)
+ * 사정률 산포도 거기서 따라온다. 백엔드 app/engine/contract_law.py 와 짝이다.
+ */
+const LAW_LABEL: Record<string, string> = {
+  national: "국가계약 ±2%",
+  local: "지방계약 ±3%",
+  agency: "지방조달청 대행",
+  unknown: "구분 불명",
+};
+
 // ── 커스텀 툴팁 ──────────────────────────────────────────────────────────
 
 function ChartTooltip({ active, payload, label }: any) {
@@ -543,6 +556,20 @@ export default function BidDistribution() {
                   <p className={`text-xl font-bold font-mono ${myLocalPos.offset_pct < 0 ? "text-rose-600" : "text-emerald-600"}`}>
                     {myLocalPos.offset_pct > 0 ? "+" : ""}{myLocalPos.offset_pct.toFixed(1)}%
                   </p>
+                  {/*
+                    투찰 시점엔 예정가격을 모른다. 위 값은 사정률≈1.0 근사라
+                    실제로는 사정률 산포만큼 번져 있다. 표시하지 않으면
+                    0.1% 해상도의 한 칸에 정확히 있는 것처럼 읽힌다.
+                  */}
+                  {result && result.preprice_sd_pct > 0 && (
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      ± {result.preprice_sd_pct.toFixed(2)}%p
+                      {" "}
+                      <span className="text-muted-foreground/70">
+                        (사정률 산포 · {LAW_LABEL[result.contract_law] ?? "구분 불명"})
+                      </span>
+                    </p>
+                  )}
                 </CardContent>
               </Card>
               <Card>

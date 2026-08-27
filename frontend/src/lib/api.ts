@@ -187,6 +187,13 @@ export interface DistributionResult {
   /** 계산에 반영된 A값 (원). 0이면 A값 없는 공고 */
   a_value: number;
   estimated_participants: number;
+  /** 발주처 적용 계약법: "national"(±2%) | "local"(±3%) | "agency"(지방조달청·혼합) | "unknown" */
+  contract_law: string;
+  /**
+   * 사정률 표준편차 (%). 투찰 시점에 예정가격을 모르므로 내 위치는 이 폭만큼 번져 있다.
+   * 복수예비가격 생성범위가 규정으로 정해져 있어(국가 ±2% / 지방 ±3%) 추정값이 아니다.
+   */
+  preprice_sd_pct: number;
   g2b_fetch_status: string;
   distribution: OffsetBucket[];
   data_quality: DistributionQuality;
