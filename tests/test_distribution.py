@@ -4,12 +4,17 @@ app/engine/distribution.py 단위 테스트
 
 테스트 대상:
   - build_offset_distribution()
+  - build_scoped_distribution()
   - calc_my_position()
 """
 
 import pytest
 from decimal import Decimal
-from app.engine.distribution import build_offset_distribution, calc_my_position
+from app.engine.distribution import (
+    build_offset_distribution,
+    build_scoped_distribution,
+    calc_my_position,
+)
 
 
 # ──────────────────────────────────────────
@@ -240,3 +245,85 @@ def test_calc_my_position_zero_count_bin_skipped():
     pos = calc_my_position(my_bid, base_price, llr, distribution)
 
     assert pos is None
+
+
+# ──────────────────────────────────────────
+# build_scoped_distribution
+# ──────────────────────────────────────────
+
+def test_scoped_count_comes_from_filtered_rows():
+    """막대 높이는 필터된 표본에서만 센다."""
+    filtered = [_row("0.87145", "0.87745", False)]
+    glob = [_row("0.87145", "0.87745", True) for _ in range(10)]
+
+    bins = build_scoped_distribution(filtered, glob)
+
+    assert len(bins) == 1
+    assert bins[0]["count"] == 1
+
+
+def test_scoped_win_rate_comes_from_global_rows():
+    """낙찰 빈도는 글로벌 표본에서 계산한다."""
+    filtered = [_row("0.87145", "0.87745", False) for _ in range(5)]
+    glob = [
+        _row("0.87145", "0.87745", True),
+        _row("0.87145", "0.87745", False),
+        _row("0.87145", "0.87745", False),
+        _row("0.87145", "0.87745", False),
+    ]
+
+    bins = build_scoped_distribution(filtered, glob)
+
+    # 필터 표본은 낙찰 0건이지만, 글로벌 기준 4건 중 1건 → 25%
+    assert bins[0]["count"] == 5
+    assert bins[0]["win_count"] == 1
+    assert bins[0]["historical_win_rate"] == pytest.approx(25.0)
+
+
+def test_scoped_only_filtered_offsets_appear():
+    """글로벌에만 있는 구간은 막대로 나타나지 않는다."""
+    filtered = [_row("0.87145", "0.87745", False)]
+    glob = [_row("0.87145", "0.87745", False), _row("0.88245", "0.87745", True)]
+
+    offsets = [b["offset_pct"] for b in build_scoped_distribution(filtered, glob)]
+
+    assert offsets == [-0.6]
+
+
+def test_scoped_win_rate_null_when_missing_in_global():
+    """글로벌에 없는 구간의 낙찰 빈도는 0%가 아니라 null이다."""
+    filtered = [_row("0.87145", "0.87745", False)]
+    glob = [_row("0.88245", "0.87745", True)]
+
+    bins = build_scoped_distribution(filtered, glob)
+
+    assert bins[0]["count"] == 1
+    assert bins[0]["historical_win_rate"] is None
+
+
+def test_scoped_without_global_uses_own_rows():
+    """global_rows가 없으면 (글로벌 레벨) 자기 표본으로 낙찰 빈도를 낸다."""
+    rows = [_row("0.87145", "0.87745", True), _row("0.87145", "0.87745", False)]
+
+    bins = build_scoped_distribution(rows)
+
+    assert bins[0]["count"] == 2
+    assert bins[0]["historical_win_rate"] == pytest.approx(50.0)
+
+
+def test_my_position_uses_precomputed_global_win_rate():
+    """calc_my_position은 병합된 글로벌 win_rate를 다시 계산하지 않는다."""
+    filtered = [_row("0.87145", "0.87745", False) for _ in range(5)]
+    glob = [_row("0.87145", "0.87745", True)] + [_row("0.87145", "0.87745", False) for _ in range(3)]
+    bins = build_scoped_distribution(filtered, glob)
+
+    pos = calc_my_position(
+        my_bid_price=int(1_000_000_000 * (0.87745 - 0.006)),
+        base_price=1_000_000_000,
+        lower_limit_rate=Decimal("0.87745"),
+        distribution=bins,
+    )
+
+    # win_count(1) / count(5) = 20% 가 아니라 글로벌 기준 25% 여야 한다
+    assert pos["historical_win_rate"] == pytest.approx(25.0)
+    assert pos["sample_count"] == 5
