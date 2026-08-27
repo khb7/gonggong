@@ -1,53 +1,110 @@
-# Handoff — 분포 엔진 출력 정상화 (T-009 / T-010 / client_id) — 2026-08-25
+# Handoff — T-011 ETL이 버리는 원본 컬럼 적재 — 2026-08-26
 
 ## 배경
 
-`bid.fp-desk.com` 공개 후 기능 점검에서, 엔진이 **돌기는 하지만 출력이 쓸 수 없는 상태**임을 확인했다.
-실제 공고 조건(경기 화성시·조경·기초금액 8.7억)으로 호출한 결과:
+`data/downloads/*.xlsx`(160개, 13,592행)는 20개 컬럼인데 `etl_csv.py`가 일부만 읽고 나머지를 버리고 있었다.
+버려지던 것 중 셋이 분석을 막고 있었다:
 
-| 항목 | 수정 전 | 수정 후 |
-|---|---|---|
-| `offset_pct` 범위 | **-178.4% ~ +1729.4%** | **-34.7% ~ +14.9%** |
-| 히스토그램 구간 수 | 230 | 182 |
-| `estimated_participants` | **4** | **578** |
-| 최다 구간 | (축이 망가져 의미 없음) | -0.9% / -1.0% / -1.2% (각 1,000건대) |
+1. **공고명** — 대괄호 태그(`[A값][관내][순]`)가 참여자 수를 크게 가르는데 컬럼 자체가 DB에 없었다
+2. **사정률** — 원본 `예가/기초(100%)`가 진짜 사정률(예정가격/기초금액)인데 미적재.
+   기존 `adjustment_rate`는 `winner_price/base_price`(=1순위기초대비)라 **이름과 내용이 다르다**
+3. **예정가격·낙찰하한가 원값** — 비율로 뭉갠 뒤 버려서 A값 역산이 불가능했다
+
+재다운로드는 불필요했다. 전부 이미 받아둔 파일 안에 있었고 적재 단계에서만 빠졌다.
 
 ## 변경한 파일
 
-- `app/db/crud_distribution.py`
-  - `_RATE_SANITY_FILTERS` 추가 — 조회 시 `0.5 <= bid_rate <= 1.05` 인 행만 쓴다
-  - `_is_usable_client_id()` 추가 — 문자열 `'None'` 을 client 필터로 쓰지 않는다
-  - `get_avg_participants()` 의 `base` 를 `_RELAX_FILTERS` 로 교체 (strict → 완화)
-  - `get_avg_participants()` 내부 `_avg()` 에 `join_license` 플래그 추가 — 공종 조건을 쓰는 레벨에서만 join
-- `tests/test_distribution_crud.py` (신규) — in-memory SQLite 로 위 4가지를 검증하는 6개 테스트
-- `tasks.md` — T-009 / T-010 done, T-003 에 원인 규명 기록
+- `alembic/versions/d52b7a3e6c14_add_notice_tags_and_preprice.py` (신규)
+  - `bids_history` + `notice_title`, `preprice_rate`, `est_price`, `lower_limit_price`, `has_a_value`
+  - `bid_tags` 테이블 신설 (`project_id`, `tag`) — `bid_license_types`와 같은 1:N 패턴
+  - 전부 nullable. 재적재 전 행은 NULL이라 '미판정'과 False가 구분된다
 
-## 고친 버그 4가지
+- `app/db/models.py`
+  - `BidsHistory`에 위 5개 컬럼 추가
+  - `BidTag` 모델 추가
 
-1. **bid_rate 이상치 유입 (T-010)** — `_fetch_offset_rows` 에 범위 조건이 없어, `bid_amount=99999999999999` 더미행(2,271)·음수 rank 파싱오류행(232)·자리수 깨짐(1,916)이 히스토그램에 그대로 들어갔다.
-2. **참여자 수 저평가 (T-009)** — `get_avg_participants` 만 `price_method='복수예비가격'` strict 였다. 실 DB 의 97% 가 `'기타'` 라 표본이 붕괴했다.
-3. **공종 수만큼 가중 (신규 발견)** — `_avg()` 가 공종 조건을 안 쓰는 레벨에서도 `BidLicenseType` 을 join 해, 공고 하나가 공종 수(최대 14개)만큼 중복 계산됐다. 2번만 고쳤을 때 1071 이 나온 원인.
-4. **client_id 죽은 컬럼** — 전 행이 문자열 `'None'` 인데 truthy 라, `client_id == 'None'` 필터가 서면 모든 발주처가 한 덩어리로 매칭됐다.
+- `scripts/etl_csv.py`
+  - `parse_notice_tags()` 추가 — 공고명 대괄호 파싱
+  - `_sync_tags()` 추가 — 태그를 공고명과 **정확히 일치**시킨다(추가만 하면 정정공고로
+    태그가 누적되어 `has_a_value`와 어긋난다. 실제로 9건 불일치가 났고 이 방식으로 고쳤다)
+  - 사정률: 원본 컬럼 우선 → 없으면 `예정가격/기초금액` 폴백 → ±10% 벗어나면 버림
+  - **upsert 경로에도 태그 삽입 추가.** `bid_license_types`는 신규 공고에만 넣는 구조라,
+    기존 12,445건이 전부 upsert를 타는 재적재에서는 태그가 하나도 안 들어갈 뻔했다
+
+- `scripts/backfill_participant_rates.py` (신규)
+  - `bid_participants.base_rate` / `vs_lower_limit`를 **재파싱 없이 계산**으로 채운다
+  - 참여자 원본 xls는 구글드라이브에 539개만 남아 있고 DB엔 12,000여 공고분이 있어 재파싱 자체가 불가능
+
+## 실행한 것
+
+```
+cp data/gonggong.db data/gonggong.db.bak-20260826
+python -m alembic upgrade head                      # 8d3110058ed9 → d52b7a3e6c14
+for f in data/downloads/*.xlsx; do python scripts/etl_csv.py --file "$f" --upsert; done
+python scripts/backfill_participant_rates.py
+```
+
+## 검증 결과
+
+| 항목 | 기준 (원본 xlsx 직접 측정) | DB 결과 | 판정 |
+|---|---|---|---|
+| `preprice_rate` 평균 | 0.999151 | **0.999162** | OK |
+| `preprice_rate` sd | 0.007287 | **0.007059** | OK |
+| `has_a_value` ↔ `[A값]` 일치 | 0건 불일치 | 0건 (`_sync_tags` 수정 후) | OK |
+| `base_rate` 재계산 검증 | 0건 불일치 | 0건 | OK |
+| `vs_lower_limit` 재계산 검증 | 0건 불일치 | 0건 | OK |
+| `bid_tags` | 태그별 비율 일치 | 44,817행 / 11,962공고 | OK |
+
+`preprice_rate` sd 0.0071은 복수예비가격 이론값(강민석·류문찬 2015: 균등분할 ±3% → 0.00767)과 일치하며,
+평균 0.9992는 같은 논문의 비균등분할-A1(지자체 채택 방식) 예측 **99.9%** 와 맞는다.
+**전 표본이 복수예비가격 적격심사임이 실증됐다** — `etl_csv.py:136`의 `낙찰방법="적격심사"` 하드코딩은
+출처가 없을 뿐 값 자체는 옳다.
+
+### 신규로 가능해진 분석
+
+`lower_limit_price / est_price`를 A값 유무로 분리하면:
+
+```
+[A값 없음] n=1,414   distinct 9개    0.87745(46%) 0.88(30%) 0.87995(17%)   ← 규정상 이산값
+[A값 있음] n=10,154  distinct 2,667 (26.3%)                                ← 연속
+```
+
+`lower_limit_rate`의 distinct 11,370개는 **오염이 아니라 A값 효과**였다.
+A값 공고는 `낙찰하한가 = (예정가격−A)×하한율 + A` 구조라 실효 하한율이 공고마다 다르다.
+전체의 82%가 A값 공고이므로, **offset 히스토그램은 A값 유무로 분리해야 한다**(미적용).
 
 ## Eval 에이전트가 확인해야 할 포인트
 
-로컬에서 `uvicorn app.main:app --port 8010` 후:
-
-```bash
-POST http://127.0.0.1:8010/api/v1/bid/distribution
-{"bid_notice_id":"T","my_bid_price":1638681998,
- "overrides":{"base_price":1821868887,"lower_limit_rate":0.8819788758084542,
-              "client_name":"경기도 화성시","region":"경기","bid_type":"적격심사","project_type":"조경"}}
-```
-
-- `distribution` 의 `offset_pct` 최소/최대가 **-40% ~ +20% 안**에 들어오는가
-- `estimated_participants` 가 수백 단위인가 (실 DB 공고당 평균 374.9명)
-- 프론트 `BidDistribution` 히스토그램의 x축이 읽히는 범위인가 — **이 화면은 이번에 확인하지 못했다**
+- `POST /api/v1/bid/distribution` — 스키마 변경이 응답에 영향 없어야 한다(신규 컬럼은 아직 엔진에서 미사용)
+- `pytest` — 모델 변경이 기존 테스트를 깨지 않는지
+- DB 쿼리로 위 검증 표 재현 가능
 
 ## 알려진 미해결 사항
 
-- **ETL 근본 수정 안 됨.** 조회 시점에서만 막았다. `scripts/etl_participants.py` 가 계속 이상치를 넣고 있다.
-- **`offset` 하한 -34.7% 잔존.** `bid_rate` 0.5~0.8 구간(9,862행)은 낙찰하한율이 낮은 공고에서는 정상일 수 있어 남겨 뒀다. 판단 필요.
-- **`client_id` 컬럼 자체는 여전히 전 행 `'None'`.** 우회만 했고 값을 채우지 않았다. client 레벨 fallback 은 `client_name` 으로만 선다.
-- **서버 배포 안 함.** 서버 DB 는 여전히 467건짜리 낡은 스냅샷이고, 서버 git 브랜치 이동이 auto 모드 분류기에 막혀 코드 동기화도 못 했다.
-- **프론트엔드 미확인.** 백엔드 응답만 검증했다.
+1. **offset 좌표계가 A값 유무를 섞고 있다.** `app/engine/distribution.py`의 `offset = bid_rate − lower_limit_rate`는
+   A값 공고(82%)와 비A값 공고를 한 히스토그램에 넣는다. 분리하거나 A값을 역산해 정규화해야 한다.
+2. **`notice_title` 미적재 431건.** `data/downloads/` 밖의 다른 소스로 들어온 행(`g2b_code` NULL 431건과 동일 집합).
+3. **`adjustment_rate` 이름이 내용과 다르다.** 기존 코드 의존이 있어 건드리지 않고 `preprice_rate`를 추가하는 쪽을 택했다.
+
+## 분석 중 확인된 사실 (T-011 범위 밖이지만 다음 작업에 직결)
+
+낙찰자는 낙찰하한가 바로 위에 붙는다 — `(1순위투찰금액 − 낙찰하한가)/낙찰하한가`의 p50 = **+0.0157%**.
+기초금액 1억이면 1.6만 원. 게임 전체가 하한선 위 0.05%p 창문 안에 압축돼 있고 거기 공고당 약 10개사가 있다.
+
+**참여자 수 기준 기대 낙찰률 (깨끗한 표본 12,049건):**
+
+```
+E[1/N] = 2.510%     ← 전 공고에 투찰하는 평범한 업체의 기대 낙찰률
+  ≤1억      3.261%
+  1억~3억    2.674%
+  3억~50억   1.371%   ← 최악 구간, 전체의 27%
+  50억~     2.615%
+```
+
+주의: `1/E[N]`(=0.258%)은 **잘못된 기준**이다. 참여자 수 분포가 극단적으로 왜곡돼 있어
+(p5=10, p50=108, p95=1,397) 두 값이 10배 차이 난다.
+
+→ **현재 낙찰률 0.3~0.4%는 어느 구간의 `E[1/N]`보다도 6~8배 낮다.**
+공고 선택으로 설명되는 폭은 1.37%~3.26%(2.4배)뿐이므로, 나머지 격차는 다른 데서 온다.
+원인 후보: (a) 대형 공고 편중, (b) 투찰가가 하한선에서 멀다, (c) 적격심사 탈락.
+**이 격차의 원인 규명이 다음 우선순위다** — 자사 투찰 기록이 필요하고 현재 DB엔 없다.

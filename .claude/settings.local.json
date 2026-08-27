@@ -68,7 +68,11 @@
       "Bash(git *)",
       "Bash(Test-Path *)",
       "Bash(chcp 65001)",
-      "PowerShell(Start-Process \"C:\\\\Program Files\\\\BraveSoftware\\\\Brave-Browser\\\\Application\\\\brave.exe\" -ArgumentList \"--remote-debugging-port=9222\")"
+      "PowerShell(Start-Process \"C:\\\\Program Files\\\\BraveSoftware\\\\Brave-Browser\\\\Application\\\\brave.exe\" -ArgumentList \"--remote-debugging-port=9222\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(awk *)",
+      "Bash(find data *)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }
