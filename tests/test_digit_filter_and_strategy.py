@@ -100,9 +100,21 @@ def test_select_center_offset_normal():
 
 
 def test_select_center_offset_aggressive():
-    """aggressive 전략은 -MAD를 반환해야 한다."""
+    """
+    aggressive 전략은 +MAD를 반환해야 한다.
+
+    offset은 `낙찰하한율 + offset`으로 쓰이므로 음수면 하한가 아래 투찰 =
+    실격이다. 설계 초안의 -MAD는 이 제약을 반영하지 못한 값이었다.
+    """
     mad_val = Decimal("0.005")
-    assert select_center_offset("aggressive", mad_val) == Decimal("-0.005")
+    assert select_center_offset("aggressive", mad_val) == Decimal("0.005")
+
+
+def test_select_center_offset_never_negative():
+    """어떤 전략이든 음수 offset을 내지 않는다 (하한 미달 = 실격)."""
+    mad_val = Decimal("0.005")
+    for strategy in ("safe", "normal", "aggressive", "알 수 없는 전략"):
+        assert select_center_offset(strategy, mad_val) >= Decimal("0")
 
 
 def test_generate_bid_spread_count():

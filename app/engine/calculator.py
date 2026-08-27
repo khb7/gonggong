@@ -122,8 +122,8 @@ def calculate_bid_spread(
 
     Examples:
         base_price=1_000_000_000, LLR=0.87745, predicted_rate=1.0, participants=152
-        → strategy: "aggressive" (항상), center_offset=-MAD
-        → spread offsets: [-MAD]
+        → strategy: "aggressive" (항상), center_offset=+MAD
+        → spread offsets: [+MAD]
         → bids: Aggressive 1개
     """
     strategy = select_strategy(participants)

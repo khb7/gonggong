@@ -71,10 +71,17 @@ def _resolve_within(root: Path, relative: str) -> Path | None:
     쓰면 root 밖 임의 파일이 서빙된다. resolve() 로 `..` 와 심볼릭 링크를 모두
     편 뒤 root 안에 있는지 확인한다.
     """
+    # 널 바이트는 resolve() 에 맡기지 않고 먼저 걸러낸다.
+    # POSIX 는 ValueError 를 던지지만 Windows 는 널 바이트 이후를 조용히 잘라내
+    # "index.html\x00.png" 가 "index.html" 로 통과해버린다. 확장자 검사를 우회하는
+    # 고전적인 수법이므로 OS 동작에 기대지 않고 명시적으로 막는다.
+    if "\x00" in relative:
+        return None
+
     root_resolved = root.resolve()
     try:
         candidate = (root_resolved / relative).resolve()
-    except (OSError, ValueError):  # 널 바이트, 경로 길이 초과 등
+    except (OSError, ValueError):  # 경로 길이 초과 등
         return None
     if not candidate.is_relative_to(root_resolved):
         return None
