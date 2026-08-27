@@ -169,17 +169,33 @@ async def search_and_collect_links(
         if len(hrefs) < 100:
             break
 
-        # 다음 페이지
-        moved = False
-        for sel in ["a.next:not(.disabled)", ".paging a.next", "li.next:not(.disabled) a"]:
-            loc = page.locator(sel)
-            if await loc.count() > 0:
-                await loc.first.click()
-                await page.wait_for_timeout(1000)
-                moved = True
-                break
+        # 다음 페이지 (ul.pagination li.page-item 방식)
+        moved = await page.evaluate("""
+            () => {
+                var items = Array.from(document.querySelectorAll('ul.pagination li.page-item'));
+                var cur = items.find(li =>
+                    li.classList.contains('disabled') && /^\\d+$/.test(li.innerText.trim())
+                );
+                if (cur) {
+                    var curNum = parseInt(cur.innerText.trim());
+                    var next = items.find(li =>
+                        !li.classList.contains('disabled') &&
+                        parseInt(li.innerText.trim()) === curNum + 1
+                    );
+                    if (next) { next.querySelector('a').click(); return true; }
+                }
+                var last = items[items.length - 1];
+                if (last && !last.classList.contains('disabled')) {
+                    last.querySelector('a').click();
+                    return true;
+                }
+                return false;
+            }
+        """)
         if not moved:
             break
+        await page.wait_for_selector("a.list_link", timeout=15_000)
+        await page.wait_for_timeout(500)
         page_num += 1
 
     print(f"  -> 총 {len(all_links)}건 수집")
@@ -390,8 +406,13 @@ async def run(
     done = load_done()
     print(f"이미 완료: {len(done)}건")
 
+    BRAVE_PATH = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=headless)
+        launch_kwargs: dict = {"headless": headless}
+        if Path(BRAVE_PATH).exists():
+            launch_kwargs["executable_path"] = BRAVE_PATH
+        browser = await pw.chromium.launch(**launch_kwargs)
         context = await browser.new_context(accept_downloads=True)
         page    = await context.new_page()
 
@@ -417,7 +438,7 @@ async def run(
                     await browser.close()
                 except Exception:
                     pass
-                browser = await pw.chromium.launch(headless=headless)
+                browser = await pw.chromium.launch(**launch_kwargs)
                 context = await browser.new_context(accept_downloads=True)
                 page    = await context.new_page()
                 await login(page, user_id, password)

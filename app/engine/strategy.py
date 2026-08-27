@@ -45,7 +45,7 @@ def select_center_offset(strategy: str, mad_val: Decimal) -> Decimal:
     if strategy == "safe":
         return mad_val
     elif strategy == "aggressive":
-        return -mad_val
+        return mad_val
     else:
         return Decimal("0")
 
