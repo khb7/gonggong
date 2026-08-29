@@ -82,11 +82,10 @@ def test_scope_key_is_shared_between_builder_and_reader():
     어긋나면 표는 채워져 있는데 조회가 못 찾고 조용히 느린 경로로 떨어진다.
     증상이 "가끔 느림" 이라 잡기 어렵다.
     """
-    assert scope_key_for("global", None, None) == ""
-    assert scope_key_for("region", "경기", None) == "경기"
-    assert scope_key_for("type_bucket", "조경", 2) == "조경:2"
-    # 버킷이 키에 들어가야 한다 — 안 들어가면 버킷별 분포가 서로 덮어쓴다
-    assert scope_key_for("type_bucket", "조경", 2) != scope_key_for("type_bucket", "조경", 3)
+    assert scope_key_for("global", None) == ""
+    assert scope_key_for("region", "경기") == "경기"
+    # 지역이 다르면 키도 달라야 한다 — 같으면 지역별 분포가 서로 덮어쓴다
+    assert scope_key_for("region", "경기") != scope_key_for("region", "서울")
 
 
 # ── 조회 ──────────────────────────────────────────────────────
@@ -125,7 +124,7 @@ async def test_resolve_prefers_precomputed_over_live_scan(db):
     db.add(OffsetScopeStat(scope_level="region", scope_key="경기", notices=40, bids=777))
     await db.commit()
 
-    bins, scope = await resolve_offset_distribution(db, None, "경기", None, None)
+    bins, scope = await resolve_offset_distribution(db, None, "경기")
 
     assert scope.level == "region"
     assert scope.notices == 40 and scope.bids == 777
@@ -146,7 +145,7 @@ async def test_resolve_skips_precomputed_scope_below_minimum(db):
     db.add(OffsetScopeStat(scope_level="global", scope_key="", notices=99, bids=5))
     await db.commit()
 
-    bins, scope = await resolve_offset_distribution(db, None, "경기", None, None)
+    bins, scope = await resolve_offset_distribution(db, None, "경기")
 
     assert scope.level == "global", "공고 3건짜리 region 이 채택됐다"
     assert bins == [{"offset_pct": 0.9, "count": 5, "win_count": 1}]
@@ -163,7 +162,7 @@ async def test_resolve_falls_back_to_live_when_not_precomputed(db):
         await _add_participants(db, f"P{i}", ["0.880"] * 5)
     await db.commit()
 
-    bins, scope = await resolve_offset_distribution(db, "우리발주처", None, None, None)
+    bins, scope = await resolve_offset_distribution(db, "우리발주처", None)
 
     assert scope.level == "client"
     assert scope.notices == 12

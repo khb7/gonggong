@@ -223,8 +223,10 @@ class OffsetHistogram(Base):
 
     client 레벨은 넣지 않는다 — 0.6s 로 충분히 빠르고 발주처 종류가 많다.
 
-    규모: 159 스코프(global 1 + region 18 + type_bucket 140) × 평균 300 bin
-          ≈ 48,000 행.
+    규모: 19 스코프(global 1 + region 18) × 평균 490 bin ≈ 9,300 행.
+
+    공종+버킷(type_bucket) 스코프는 2026 홀드아웃 백테스트에서 밴드 적중률이
+    global 보다 낮아 제거했다 (74.8% vs 76.7%).
     """
 
     __tablename__ = "offset_histogram"
@@ -237,11 +239,11 @@ class OffsetHistogram(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     scope_level: Mapped[str] = mapped_column(
         String(20), nullable=False, index=True,
-        comment='"global" | "region" | "type_bucket"',
+        comment='"global" | "region"',
     )
     scope_key: Mapped[str] = mapped_column(
         String(120), nullable=False,
-        comment='global="" / region="경기" / type_bucket="조경:2"',
+        comment='global="" / region="경기"',
     )
     offset_pct: Mapped[float] = mapped_column(
         Float, nullable=False, comment="bin 중심 offset (%, 0.1 단위)"

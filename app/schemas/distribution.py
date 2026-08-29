@@ -34,7 +34,7 @@ class DataQuality(BaseModel):
     total_bids: int = Field(..., description="분포 계산에 사용된 참여자 수 (선택된 레벨 기준)")
     distribution_level: str = Field(
         "global",
-        description='막대 높이(count)에 사용된 fallback 레벨: "client" | "region" | "type_bucket" | "global"',
+        description='막대 높이(count)에 사용된 fallback 레벨: "client" | "region" | "global"',
     )
     distribution_label: str | None = Field(
         None, description="해당 레벨의 필터값 (global이면 null)"

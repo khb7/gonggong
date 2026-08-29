@@ -225,9 +225,7 @@ async def test_client_level_isolates_by_client_name(db):
         await _add_participants(db, f"OTHER-{i}", ["0.900"] * 20)
     await db.commit()
 
-    bins, scope = await resolve_offset_distribution(
-        db, "우리발주처", "경기", "조경", 3
-    )
+    bins, scope = await resolve_offset_distribution(db, "우리발주처", "경기")
 
     assert scope.level == "client"
     assert scope.label == "우리발주처"

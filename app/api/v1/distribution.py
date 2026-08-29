@@ -103,10 +103,8 @@ async def get_bid_distribution(
 
     bucket_id = ProjectBucket.get_bucket_id(base_price) if base_price > 0 else 1
 
-    # ── 3. 분포 조회 (발주처 → 지역 → 공종+버킷 → 전체) ──────
-    rows, scope = await resolve_offset_distribution(
-        db, client_name, region, project_type, bucket_id
-    )
+    # ── 3. 분포 조회 (발주처 → 지역 → 전체) ──────────────────
+    rows, scope = await resolve_offset_distribution(db, client_name, region)
 
     # 낙찰 빈도는 항상 전체 표본에서 계산한다 (build_scoped_distribution 주석 참고).
     global_rows = None if scope.level == "global" else await get_offset_distribution_cached(db)

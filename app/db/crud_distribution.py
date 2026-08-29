@@ -39,7 +39,7 @@ _GLOBAL_SCOPE_KEY = "global"
 class DistributionScope:
     """분포 계산에 실제로 사용된 fallback 레벨."""
 
-    level: str          # "client" | "region" | "type_bucket" | "global"
+    level: str          # "client" | "region" | "global"
     label: str | None   # 해당 레벨의 필터값 (global이면 None)
     notices: int        # 이 레벨의 공고 수
     bids: int           # 이 레벨의 참여자 행 수
@@ -154,15 +154,13 @@ def _scope_conditions(
     return conditions, needs_license
 
 
-def scope_key_for(level: str, label: str | None, bucket_id: int | None) -> str:
+def scope_key_for(level: str, label: str | None) -> str:
     """사전계산 표의 scope_key 를 만든다.
 
     빌더(scripts/build_offset_histogram.py)와 조회가 **같은 함수**를 써야 한다.
     양쪽이 다른 규칙으로 키를 만들면 표는 채워져 있는데 조회가 못 찾고,
     조용히 느린 실시간 경로로 떨어진다 — 증상이 "가끔 느림" 이라 잡기 어렵다.
     """
-    if level == "type_bucket":
-        return f"{label}:{bucket_id}"
     return label or ""
 
 
@@ -349,13 +347,12 @@ async def get_offset_distribution_cached(
     level = (
         "global" if not (client_name or region or project_type)
         else "region" if region and not client_name
-        else "type_bucket" if project_type and not (client_name or region)
         else "client"
     )
     if level != "client":
-        label = None if level == "global" else (region or project_type)
+        label = None if level == "global" else region
         pre = await get_precomputed_distribution(
-            db, level, scope_key_for(level, label, bucket_id)
+            db, level, scope_key_for(level, label)
         )
         if pre is not None:
             distribution_cache.set(key, pre)
@@ -376,14 +373,16 @@ async def resolve_offset_distribution(
     db: AsyncSession,
     client_name: str | None,
     region: str | None,
-    project_type: str | None,
-    bucket_id: int | None,
 ) -> tuple[list[dict], DistributionScope]:
     """
     계층형 fallback으로 분포 행과 사용된 레벨을 함께 반환한다.
 
-    Fallback: 발주처 → 지역 → 공종+버킷 → 전체.
+    Fallback: 발주처 → 지역 → 전체.
     각 레벨은 공고 수가 _MIN_DIST_NOTICES 이상일 때만 채택된다.
+
+    공종+버킷(type_bucket) 계층은 2026 홀드아웃 백테스트에서 밴드 적중률이
+    74.8% 로 같은 공고의 global 76.7% 보다 낮아 제거했다. 공종·금액으로
+    쪼개면 표본만 줄고 신호는 흐려진다.
 
     Returns:
         (rows, scope)
@@ -393,17 +392,11 @@ async def resolve_offset_distribution(
         candidates.append(("client", client_name, {"client_name": client_name}))
     if region:
         candidates.append(("region", region, {"region": region}))
-    if project_type:
-        candidates.append((
-            "type_bucket",
-            project_type,
-            {"project_type": project_type, "bucket_id": bucket_id},
-        ))
 
     candidates.append((_GLOBAL_SCOPE_KEY, None, {}))
 
     for level, label, kwargs in candidates:
-        skey = scope_key_for(level, label, bucket_id)
+        skey = scope_key_for(level, label)
 
         # 사전계산 표를 먼저 본다. 넓은 스코프는 실시간 스캔이 수십 초라
         # (서버 실측 region 22.3s / global 69.1s) 이 경로가 사실상 필수다.
@@ -422,7 +415,7 @@ async def resolve_offset_distribution(
         if level != _GLOBAL_SCOPE_KEY and notices < _MIN_DIST_NOTICES:
             continue
         bins = await get_offset_distribution_cached(
-            db, **kwargs, _cache_key_override=_cache_key(level, label, bucket_id)
+            db, **kwargs, _cache_key_override=_cache_key(level, label)
         )
         return bins, DistributionScope(level=level, label=label, notices=notices, bids=bids)
 

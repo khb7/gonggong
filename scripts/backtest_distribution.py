@@ -354,7 +354,8 @@ def section_fallback(train: dict, test: dict):
                 ag["hit"] += gh; ag["dist"] += gd
 
         # (B) 정책 — 실제 fallback 이 고르는 가용 최상위 레벨
-        sel = next((l for l in ("client", "region", "type_bucket") if l in cand), "global")
+        # 엔진의 실제 fallback 순서와 같아야 한다 (type_bucket 은 2026 검증 후 제거됨)
+        sel = next((l for l in ("client", "region") if l in cand), "global")
         chose[sel] += 1
         offs = g_offs if sel == "global" else cand[sel][1]
         h, _, _, _ = stat(offs, w)

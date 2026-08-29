@@ -18,7 +18,6 @@
 무엇을 계산하나:
       global       1개
       region       지역명마다      (region 컬럼은 '전국,경기' 처럼 복수값이라 분해한다)
-      type_bucket  공종 × 버킷     (실제 데이터가 있는 조합만)
 
   각 스코프마다 히스토그램(offset_histogram)과 공고 수·참여자 수(offset_scope_stat)를
   같이 저장한다. fallback 레벨 채택이 공고 수로 판단되기 때문이다.
@@ -39,7 +38,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy import delete, select, text
 
-from app.db.models import BidLicenseType, BidsHistory, OffsetHistogram, OffsetScopeStat
+from app.db.models import BidsHistory, OffsetHistogram, OffsetScopeStat
 from app.db.session import AsyncSessionLocal
 from app.db.crud_distribution import (
     count_offset_distribution,
@@ -49,9 +48,6 @@ from app.db.crud_distribution import (
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-BUCKETS = (1, 2, 3, 4)
-
 
 async def _region_names(session) -> list[str]:
     """region 컬럼에서 실제 지역명을 뽑는다.
@@ -69,12 +65,6 @@ async def _region_names(session) -> list[str]:
             if part and part != "기타":
                 names.add(part)
     return sorted(names)
-
-
-async def _type_bucket_pairs(session) -> list[tuple[str, int]]:
-    """실제 데이터가 있는 (공종, 버킷) 조합만 고른다."""
-    rows = await session.execute(select(BidLicenseType.type_name).distinct())
-    return [(t, b) for (t,) in rows for b in BUCKETS]
 
 
 async def _build_one(session, level: str, key: str, kwargs: dict) -> tuple[int, int]:
@@ -114,21 +104,13 @@ async def run(only: str | None) -> None:
         targets: list[tuple[str, str, dict]] = []
 
         if only in (None, "global"):
-            targets.append(("global", scope_key_for("global", None, None), {}))
+            targets.append(("global", scope_key_for("global", None), {}))
 
         if only in (None, "region"):
             for name in await _region_names(session):
                 targets.append(
-                    ("region", scope_key_for("region", name, None), {"region": name})
+                    ("region", scope_key_for("region", name), {"region": name})
                 )
-
-        if only in (None, "type_bucket"):
-            for t, b in await _type_bucket_pairs(session):
-                targets.append((
-                    "type_bucket",
-                    scope_key_for("type_bucket", t, b),
-                    {"project_type": t, "bucket_id": b},
-                ))
 
         print(f"대상 스코프 {len(targets)}개\n")
         started = time.time()
@@ -162,7 +144,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--only",
-        choices=["global", "region", "type_bucket"],
+        choices=["global", "region"],
         help="특정 레벨만 다시 만든다 (기본: 전부)",
     )
     args = ap.parse_args()
