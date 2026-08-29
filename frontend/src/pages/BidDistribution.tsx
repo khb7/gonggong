@@ -13,6 +13,7 @@ import {
   computeLocalPosition,
   computeMyOffsetPct,
   findWinZone,
+  findBestWinRateBin,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
   type LocalPosition,
@@ -208,6 +209,19 @@ export default function BidDistribution() {
 
   // 낙찰 집중 구간 — win_count 만 쓰므로 필터 레벨과 무관하게 유효하다
   const winZone = useMemo(() => findWinZone(prepared.bins), [prepared]);
+
+  // 추천 투찰가 — 낙찰 빈도가 가장 높았던 구간을 금액으로 환산한다.
+  // 예측이 아니라 "과거에 가장 유리했던 자리"다. 후보 표본이 모자라면 null 이고,
+  // 그때는 카드를 아예 그리지 않는다 (없는 근거로 숫자를 내지 않는다).
+  const bestBin = useMemo(() => {
+    if (!result) return null;
+    return findBestWinRateBin(
+      prepared.bins,
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+    );
+  }, [result, prepared]);
 
   // 구간 안팎 낙찰률 비교. count(필터 표본)와 win_count(전체 표본)의
   // 출처가 다르면 성립하지 않으므로 같은 표본일 때만 계산한다.
@@ -492,6 +506,44 @@ export default function BidDistribution() {
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
+
+              {/* 추천 투찰가 — 낙찰 빈도 최대 구간 */}
+              {bestBin && (
+                <div className="mx-2 mt-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-3">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <span className="text-xs text-muted-foreground">추천 투찰가</span>
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      offset {bestBin.offset_pct > 0 ? "+" : ""}{bestBin.offset_pct.toFixed(1)}%
+                    </Badge>
+                  </div>
+                  <p className="text-2xl font-bold font-mono tracking-tight mt-0.5">
+                    {formatNumber(bestBin.estimated_price)}
+                    <span className="text-sm font-normal text-muted-foreground ml-1">원</span>
+                  </p>
+                  <p className="text-xs mt-1.5">
+                    이 구간 과거 낙찰 빈도{" "}
+                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                      {bestBin.historical_win_rate.toFixed(2)}%
+                    </span>
+                    <span className="text-muted-foreground">
+                      {" "}(참여 {formatNumber(bestBin.sample_count)}건 중 낙찰 {formatNumber(bestBin.win_count)}건)
+                    </span>
+                    {bestBin.multiple !== null && (
+                      <span>
+                        {" "}— 전체 평균의{" "}
+                        <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                          {bestBin.multiple.toFixed(1)}배
+                        </span>
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-2 pt-1.5 border-t border-primary/20">
+                    ⚠ 예정가격은 개찰 전까지
+                    {result.preprice_sd_pct > 0 ? ` ±${result.preprice_sd_pct.toFixed(1)}% ` : " "}
+                    흔들립니다. 이 금액은 과거 분포에서 가장 유리했던 자리일 뿐, 확정값이 아닙니다.
+                  </p>
+                </div>
+              )}
 
               {/* 집중 구간 요약 */}
               {winZone ? (

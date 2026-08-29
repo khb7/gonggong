@@ -174,7 +174,7 @@ export interface BidPosition {
 }
 
 /** 분포 계산에 쓰인 fallback 레벨 */
-export type DistributionLevel = "client" | "region" | "type_bucket" | "global";
+export type DistributionLevel = "client" | "region" | "global";
 
 export interface DistributionQuality {
   /** 선택된 레벨의 참여자 수 (막대 높이의 합) */

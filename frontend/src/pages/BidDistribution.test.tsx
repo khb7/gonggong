@@ -128,7 +128,7 @@ describe("BidDistribution", () => {
     // 60% 를 담는 최소 구간은 -0.8 ~ -0.6 (10+9+6 = 25건 / 전체 41건)
     expect(screen.getByText("-0.8% ~ -0.6%")).toBeInTheDocument();
     expect(screen.getByText(/낙찰 25건 \/ 전체 41건/)).toBeInTheDocument();
-    expect(screen.getByText(/배$/)).toBeInTheDocument();
+    expect(screen.getByText("9.4배")).toBeInTheDocument();
     // 확률로 오독되지 않도록 하는 문구
     expect(screen.getByText(/낙찰 확률이 아닙니다/)).toBeInTheDocument();
   });
@@ -198,6 +198,32 @@ describe("BidDistribution", () => {
     });
 
     await waitFor(() => expect(screen.getByText(/높습니다/)).toBeInTheDocument());
+  });
+
+  it("추천 투찰가를 금액으로 보여준다", async () => {
+    // 픽스처의 낙찰 빈도 최대 구간은 -0.8% (참여 1000건 중 낙찰 10건 = 1%)
+    vi.mocked(getBidDistribution).mockResolvedValue(makeResult());
+    renderPage();
+    await loadDistribution();
+
+    expect(screen.getByText("추천 투찰가")).toBeInTheDocument();
+    // (기초금액 − A) × (하한율 + offset) + A, A값 없음
+    const expected = Math.round(100_000_000 * (0.87745 - 0.008));
+    expect(screen.getByText(expected.toLocaleString())).toBeInTheDocument();
+  });
+
+  it("낙찰 표본이 모자라면 추천 카드를 그리지 않는다", async () => {
+    // 모든 구간의 낙찰이 5건 미만 — 근거가 없으면 숫자를 내지 않는다
+    const thin = Array.from({ length: 21 }, (_, i) => {
+      const offset_pct = Math.round((-1.5 + i / 10) * 10) / 10;
+      const win_count = i % 3;
+      return { offset_pct, count: 1000, win_count, historical_win_rate: win_count / 10 };
+    });
+    vi.mocked(getBidDistribution).mockResolvedValue(makeResult({ distribution: thin }));
+    renderPage();
+    await loadDistribution();
+
+    expect(screen.queryByText("추천 투찰가")).not.toBeInTheDocument();
   });
 
   it("붙여넣기가 인식되지 않으면 오류 문구를 보여준다", async () => {
