@@ -90,12 +90,75 @@ def build_scoped_distribution(
     return merged
 
 
+def _offset_pct_at_rate(
+    my_bid_price: int,
+    base_price: int,
+    lower_limit_rate: Decimal,
+    a: int,
+    adjustment_rate: Decimal,
+) -> float:
+    """사정률을 하나 가정했을 때의 내 offset(%)."""
+    est_price = Decimal(base_price) * adjustment_rate
+    adjusted_rate = (Decimal(my_bid_price) - Decimal(a)) / (est_price - Decimal(a))
+    return round(
+        (float(adjusted_rate) - float(lower_limit_rate)) * 100,
+        _BIN_PCT_RESOLUTION,
+    )
+
+
+def calc_offset_band(
+    my_bid_price: int,
+    base_price: int,
+    lower_limit_rate: Decimal,
+    rate_sigma: Decimal,
+    a_value: int = 0,
+) -> tuple[float, float] | None:
+    """
+    내 위치의 불확실성 밴드(±1σ)를 계산한다.
+
+    히스토그램의 과거 offset 은 개찰로 확정된 **예정가격** 기준이다.
+    내 투찰가는 개찰 전이라 예정가격을 모르므로 **기초금액**으로 대신 잰다.
+    자가 다르기 때문에 내 화살표는 사정률이 흔들리는 만큼 좌우로 밀린다.
+
+        예정가격 = 기초금액 × 사정률
+        내 offset = (투찰금액 − A) / (기초금액 × 사정률 − A) − 법정하한율
+
+    사정률이 크면 분모가 커져 offset 이 작아지므로,
+    밴드 하단은 사정률 (1+σ), 상단은 (1−σ) 에서 나온다.
+
+    이 오차는 계산으로 없앨 수 없다 (예정가격은 개찰 시 정해진다).
+    없애는 대신 폭을 드러내는 것이 이 함수의 목적이다.
+
+    Args:
+        rate_sigma: 사정률 표준편차 (Decimal, 예: Decimal("0.0072"))
+
+    Returns:
+        (low_pct, high_pct) 또는 계산 불가 시 None
+    """
+    if rate_sigma is None or rate_sigma <= 0 or base_price <= 0 or my_bid_price <= 0:
+        return None
+
+    a = a_value if 0 < a_value < base_price else 0
+
+    lo_rate = Decimal(1) - Decimal(rate_sigma)
+    hi_rate = Decimal(1) + Decimal(rate_sigma)
+
+    # 사정률이 1에서 크게 벗어나 예정가격이 A값 이하로 내려가면 정의되지 않는다.
+    if Decimal(base_price) * lo_rate <= Decimal(a):
+        return None
+
+    low = _offset_pct_at_rate(my_bid_price, base_price, lower_limit_rate, a, hi_rate)
+    high = _offset_pct_at_rate(my_bid_price, base_price, lower_limit_rate, a, lo_rate)
+    return low, high
+
+
 def calc_my_position(
     my_bid_price: int,
     base_price: int,
     lower_limit_rate: Decimal,
     distribution: list[dict],
     a_value: int = 0,
+    rate_sigma: Decimal | None = None,
 ) -> dict | None:
     """
     내 투찰가의 분포상 위치를 계산한다.
@@ -117,6 +180,8 @@ def calc_my_position(
         lower_limit_rate: 법정 낙찰하한율 (Decimal). 실효 하한율이 아니다.
         distribution: build_offset_distribution() 결과
         a_value: A값 (원). 0이면 기존 계산과 동일.
+        rate_sigma: 사정률 표준편차. 주면 ±1σ 오차 밴드를 함께 계산한다.
+                    None 이면 밴드 필드가 모두 None 이다.
 
     Returns:
         {
@@ -125,6 +190,9 @@ def calc_my_position(
             percentile: float,           내 위치보다 낮은 참여자 비율 (%)
             historical_win_rate: float,  해당 bin의 과거 낙찰 빈도 (%)
             sample_count: int,           해당 bin의 참여 건수
+            offset_low_pct: float|None,  사정률 −1σ~+1σ 를 반영한 밴드 하단 (%)
+            offset_high_pct: float|None, 같은 밴드 상단 (%)
+            rate_sigma: float|None,      밴드 계산에 쓴 사정률 σ
         }
         또는 None (분포에 매칭 bin 없거나 count=0인 경우)
     """
@@ -166,10 +234,17 @@ def calc_my_position(
     rate = Decimal(str(lower_limit_rate)) + Decimal(str(my_offset_pct)) / Decimal(100)
     estimated_price = int((Decimal(base_price) - Decimal(a)) * rate + Decimal(a))
 
+    band = calc_offset_band(
+        my_bid_price, base_price, lower_limit_rate, rate_sigma, a_value
+    ) if rate_sigma else None
+
     return {
         "offset_pct": my_offset_pct,
         "estimated_price": estimated_price,
         "percentile": round(percentile, 2),
         "historical_win_rate": round(historical_win_rate, 2),
         "sample_count": matching_bin["count"],
+        "offset_low_pct": band[0] if band else None,
+        "offset_high_pct": band[1] if band else None,
+        "rate_sigma": float(rate_sigma) if band else None,
     }

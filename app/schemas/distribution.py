@@ -29,6 +29,20 @@ class MyPositionResponse(BaseModel):
     historical_win_rate: float = Field(..., description="해당 구간 과거 낙찰 빈도 (%)")
     sample_count: int = Field(..., description="해당 구간 참여 건수 — 값 신뢰도 판단용")
 
+    # ── 사정률 불확실성 밴드 ──────────────────────────────
+    # offset_pct 는 사정률≈1.0 을 가정한 점 추정이다. 실제 예정가격은 개찰 시
+    # 정해지므로 내 위치는 사정률이 흔들리는 만큼 좌우로 밀린다.
+    # 아래 두 값이 그 ±1σ 폭이다. σ 를 못 구하면 셋 다 null.
+    offset_low_pct: float | None = Field(
+        None, description="사정률 +1σ 일 때의 offset (%) — 밴드 하단"
+    )
+    offset_high_pct: float | None = Field(
+        None, description="사정률 −1σ 일 때의 offset (%) — 밴드 상단"
+    )
+    rate_sigma: float | None = Field(
+        None, description="밴드 계산에 사용한 사정률 표준편차 (소수)"
+    )
+
 
 class DataQuality(BaseModel):
     total_bids: int = Field(..., description="분포 계산에 사용된 참여자 수 (선택된 레벨 기준)")
@@ -58,6 +72,10 @@ class DistributionResponse(BaseModel):
     a_value: int = Field(0, description="계산에 반영된 A값 (원). 0이면 A값 없는 공고")
     estimated_participants: int = Field(..., description="이번 공고 예상 참여자 수 (과거 유사 공고 평균)")
     g2b_fetch_status: str = Field(..., description='"ok" | "failed" | "mock"')
+    rate_sigma: float | None = Field(
+        None,
+        description="사정률 표준편차 (소수). null이면 표본 부족으로 오차 밴드를 그리지 않는다",
+    )
     distribution: list[OffsetBucketResponse]
     data_quality: DataQuality
     my_position: MyPositionResponse | None = None

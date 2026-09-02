@@ -40,11 +40,18 @@ _MOCK_ROWS = [
 
 
 @contextlib.contextmanager
-def _dist(rows, avg: int = 150, scope: DistributionScope | None = None, global_rows=None):
+def _dist(
+    rows,
+    avg: int = 150,
+    scope: DistributionScope | None = None,
+    global_rows=None,
+    sigma: Decimal | None = None,
+):
     """분포 조회 계층을 통째로 대체한다.
 
     scope 를 주면 fallback 레벨을 강제할 수 있고, global_rows 로 낙찰 빈도
     계산에 쓰이는 전체 표본을 따로 지정할 수 있다.
+    sigma 를 주면 내 위치의 사정률 오차 밴드가 계산된다 (기본은 밴드 없음).
     """
     scope = scope or DistributionScope(
         level="global", label=None, notices=len(rows), bids=len(rows)
@@ -55,6 +62,7 @@ def _dist(rows, avg: int = 150, scope: DistributionScope | None = None, global_r
             return_value=global_rows if global_rows is not None else rows
         ),
         "get_avg_participants": AsyncMock(return_value=avg),
+        "get_adjustment_rate_sigma": AsyncMock(return_value=sigma),
     }
     with contextlib.ExitStack() as stack:
         for name, mock in targets.items():
@@ -181,6 +189,32 @@ def test_distribution_my_position_populated(client):
     assert "sample_count" in pos
 
 
+def test_distribution_band_null_without_sigma(client):
+    """σ를 못 구하면 오차 밴드 필드는 null이다 — 근거 없는 폭을 그리지 않는다."""
+    my_bid = int(1_000_000_000 * (0.87745 - 0.006))
+
+    with _dist(_MOCK_ROWS, avg=150):
+        data = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid}).json()
+
+    assert data["rate_sigma"] is None
+    assert data["my_position"]["offset_low_pct"] is None
+    assert data["my_position"]["offset_high_pct"] is None
+
+
+def test_distribution_band_populated_with_sigma(client):
+    """σ가 있으면 내 위치를 점이 아니라 ±1σ 폭으로 함께 반환한다."""
+    my_bid = int(1_000_000_000 * (0.87745 - 0.006))
+
+    with _dist(_MOCK_ROWS, avg=150, sigma=Decimal("0.0072")):
+        data = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid}).json()
+
+    pos = data["my_position"]
+    assert data["rate_sigma"] == pytest.approx(0.0072)
+    assert pos["offset_low_pct"] < pos["offset_pct"] < pos["offset_high_pct"]
+    # 밴드 폭이 bin 해상도(0.1%)보다 훨씬 넓어야 "점으로 그리면 안 된다"가 성립한다
+    assert pos["offset_high_pct"] - pos["offset_low_pct"] > 1.0
+
+
 def test_distribution_my_position_out_of_range_returns_null(client):
     """분포 범위 밖 투찰가이면 my_position은 null이다."""
     # 매우 높은 가격 → 분포에 없는 offset
@@ -269,10 +303,28 @@ def test_avg_participants_failure_does_not_break_response(client):
                AsyncMock(return_value=(_MOCK_ROWS, scope))), \
          patch("app.api.v1.distribution.get_offset_distribution_cached",
                AsyncMock(return_value=_MOCK_ROWS)), \
-         patch("app.api.v1.distribution.get_avg_participants",
+         patch("app.api.v1.distribution.get_adjustment_rate_sigma",
+               AsyncMock(return_value=None)),          patch("app.api.v1.distribution.get_avg_participants",
                AsyncMock(side_effect=RuntimeError("relation does not exist"))):
         resp = _call(client, {"bid_notice_id": "TEST-001"})
 
     assert resp.status_code == 200
     assert resp.json()["estimated_participants"] == 0
     assert len(resp.json()["distribution"]) == 2
+
+
+def test_sigma_failure_does_not_break_response(client):
+    """σ 조회가 실패해도 분포는 정상 응답한다 — 밴드만 사라진다."""
+    my_bid = int(1_000_000_000 * (0.87745 - 0.006))
+    scope = DistributionScope(level="global", label=None, notices=1, bids=4)
+    with patch("app.api.v1.distribution.resolve_offset_distribution",
+               AsyncMock(return_value=(_MOCK_ROWS, scope))),          patch("app.api.v1.distribution.get_offset_distribution_cached",
+               AsyncMock(return_value=_MOCK_ROWS)),          patch("app.api.v1.distribution.get_avg_participants",
+               AsyncMock(return_value=150)),          patch("app.api.v1.distribution.get_adjustment_rate_sigma",
+               AsyncMock(side_effect=RuntimeError("stddev_samp is not defined"))):
+        resp = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rate_sigma"] is None
+    assert data["my_position"]["offset_low_pct"] is None

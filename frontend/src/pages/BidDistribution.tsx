@@ -171,6 +171,7 @@ export default function BidDistribution() {
       result.lower_limit_rate,
       prepared.bins,
       result.a_value,
+      result.rate_sigma ?? 0,
     );
   }, [result, myBidPrice, prepared]);
 
@@ -212,6 +213,29 @@ export default function BidDistribution() {
   const zoneLabels = winZone
     ? { x1: winZone.from.toFixed(1) + "%", x2: winZone.to.toFixed(1) + "%" }
     : null;
+
+  // 내 위치의 사정률 오차 밴드(±1σ).
+  //
+  // 히스토그램의 과거 offset 은 확정된 예정가격 기준인데 내 위치는 기초금액
+  // 기준이라, 개찰에서 사정률이 어떻게 나오냐에 따라 화살표가 좌우로 밀린다.
+  // ReferenceArea 는 카테고리 축을 쓰므로 표시 범위 안으로 클램프해야 한다.
+  const bandLabels = useMemo(() => {
+    if (!myLocalPos || myLocalPos.offsetLowPct == null || myLocalPos.offsetHighPct == null) {
+      return null;
+    }
+    const width = Math.round((myLocalPos.offsetHighPct - myLocalPos.offsetLowPct) * 10) / 10;
+    const lo = Math.max(myLocalPos.offsetLowPct, prepared.rangeFrom);
+    const hi = Math.min(myLocalPos.offsetHighPct, prepared.rangeTo);
+    if (lo > hi) return null;
+    return { x1: lo.toFixed(1) + "%", x2: hi.toFixed(1) + "%", width };
+  }, [myLocalPos, prepared]);
+
+  // 밴드가 집중 구간보다 넓으면 "구간 한가운데를 겨눈다"는 판단 자체가 성립하지 않는다.
+  const bandVsZone = useMemo(() => {
+    if (!winZone || !bandLabels) return null;
+    const zoneWidth = Math.round((winZone.to - winZone.from) * 10) / 10;
+    return { zoneWidth, bandWidth: bandLabels.width, tooWide: bandLabels.width >= zoneWidth };
+  }, [winZone, bandLabels]);
 
   // offset → 원화 변환 (표시용)
   const myOffsetPct = useMemo(() => {
@@ -393,6 +417,12 @@ export default function BidDistribution() {
                     내 위치
                   </span>
                 )}
+                {bandLabels && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-sm inline-block bg-rose-500/15 border border-rose-500/40" />
+                    사정률 오차 범위 (±1σ)
+                  </span>
+                )}
               </div>
               <ResponsiveContainer width="100%" height={360}>
                 <ComposedChart data={chartData} barCategoryGap="10%" margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
@@ -436,6 +466,18 @@ export default function BidDistribution() {
                       stroke="hsl(142 71% 45%)"
                       strokeOpacity={0.35}
                       strokeDasharray="3 3"
+                    />
+                  )}
+                  {bandLabels && (
+                    <ReferenceArea
+                      yAxisId="left"
+                      x1={bandLabels.x1}
+                      x2={bandLabels.x2}
+                      fill="hsl(0 84% 60%)"
+                      fillOpacity={0.12}
+                      stroke="hsl(0 84% 60%)"
+                      strokeOpacity={0.3}
+                      strokeDasharray="2 2"
                     />
                   )}
                   <Bar yAxisId="left" dataKey="non_winner" stackId="a" fill="hsl(215 20% 70%)" name="미낙찰" isAnimationActive={false} />
@@ -506,6 +548,17 @@ export default function BidDistribution() {
               <p className="text-[11px] text-muted-foreground text-center mt-2">
                 offset = 투찰율 − 낙찰하한율 (낙찰하한율 기준 상대 위치)
               </p>
+              {bandLabels && myLocalPos && (
+                <p className="text-[11px] text-muted-foreground text-center mt-1">
+                  내 위치는 점이 아니라 폭입니다 —{" "}
+                  <span className="font-mono text-rose-600 dark:text-rose-400">
+                    {myLocalPos.offsetLowPct!.toFixed(1)}% ~ {myLocalPos.offsetHighPct!.toFixed(1)}%
+                  </span>
+                  . 과거 막대는 개찰로 확정된 예정가격 기준인데, 내 투찰가는 개찰 전이라
+                  기초금액으로 대신 쟀습니다. 실제 위치는 사정률에 따라 이 폭 안에서 움직입니다
+                  (사정률 σ={((result.rate_sigma ?? 0) * 100).toFixed(2)}% 기준 ±1σ).
+                </p>
+              )}
               {prepared.excludedCount > 0 && (
                 <p className="text-[11px] text-muted-foreground text-center mt-1">
                   표시 범위 {prepared.rangeFrom.toFixed(1)}% ~ {prepared.rangeTo.toFixed(1)}% —
@@ -517,6 +570,13 @@ export default function BidDistribution() {
           </Card>
 
           {/* 내 위치와 집중 구간의 관계 */}
+          {bandVsZone?.tooWide && (
+            <p className="text-xs text-center text-amber-600 dark:text-amber-500">
+              사정률 오차 폭({bandVsZone.bandWidth.toFixed(1)}%p)이 낙찰 집중 구간 폭
+              ({bandVsZone.zoneWidth.toFixed(1)}%p)보다 넓습니다 —
+              이 구간을 정밀하게 겨냥할 수 있는 상황이 아닙니다.
+            </p>
+          )}
           {zoneRelation && winZone && (
             <p className="text-sm text-center">
               {zoneRelation.inside ? (
@@ -543,6 +603,11 @@ export default function BidDistribution() {
                   <p className={`text-xl font-bold font-mono ${myLocalPos.offset_pct < 0 ? "text-rose-600" : "text-emerald-600"}`}>
                     {myLocalPos.offset_pct > 0 ? "+" : ""}{myLocalPos.offset_pct.toFixed(1)}%
                   </p>
+                  {myLocalPos.offsetLowPct != null && myLocalPos.offsetHighPct != null && (
+                    <p className="text-[10px] text-muted-foreground font-mono">
+                      {myLocalPos.offsetLowPct.toFixed(1)}% ~ {myLocalPos.offsetHighPct.toFixed(1)}% (±1σ)
+                    </p>
+                  )}
                 </CardContent>
               </Card>
               <Card>
