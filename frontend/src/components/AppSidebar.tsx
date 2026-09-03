@@ -18,7 +18,7 @@ const items = [
   { title: "투찰가 계산", url: "/calculator", icon: Calculator },
   { title: "데이터 현황", url: "/overview", icon: BarChart3 },
   { title: "발주처 통계", url: "/clients", icon: Building2 },
-  { title: "사정률 분포", url: "/distribution", icon: TrendingUp },
+  { title: "사정률·낙찰률 분포", url: "/distribution", icon: TrendingUp },
   { title: "데이터 수집", url: "/collection", icon: Database },
 ];
 

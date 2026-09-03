@@ -9,40 +9,26 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, ChevronDown, ChevronUp, ClipboardPaste } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const FALLBACK_BADGES: Record<string, { label: string; className: string }> = {
-  client: { label: "발주처 이력", className: "bg-success text-success-foreground" },
-  region: { label: "지역 이력", className: "bg-info text-info-foreground" },
-  type_bucket: { label: "공종+금액", className: "bg-warning text-warning-foreground" },
-  global: { label: "전체 평균", className: "bg-orange-500 text-primary-foreground" },
-  none: { label: "데이터 없음", className: "bg-destructive text-destructive-foreground" },
-  default: { label: "데이터 없음", className: "bg-destructive text-destructive-foreground" },
-};
-
-const CONFIDENCE_LABELS: Record<string, string> = {
-  high: "높음",
-  medium: "보통",
-  low: "낮음",
-};
+/*
+ * 사정률 예측을 끄면서(T-015) 이 화면에서 fallback 레벨·신뢰도·전략 표시가
+ * 전부 의미를 잃었다. 백엔드가 항상 "fixed" 를 돌려주므로 배지는 "데이터 없음"
+ * 으로만 찍혀 오해를 불렀다. 관련 상수(FALLBACK_BADGES / CONFIDENCE_LABELS /
+ * STRATEGY_LABELS / hasNoHistory)를 함께 제거했다.
+ * 분포 근거는 분포 화면(/)의 data_quality 배지가 담당한다.
+ */
 
 /**
- * 이력이 없어 fallback 이 끝까지 내려간 상태.
- * 이때 백엔드는 predicted_rate 를 1.0 으로 채워 보내는데, 이건 예측값이 아니라
- * 기준값이다. 100.0000% 로 찍으면 정밀한 예측처럼 읽히므로 숫자를 감춘다.
+ * 투찰가 카드 라벨.
+ *
+ * 백엔드의 "Aggressive/Normal/Safe" 는 offset 을 ±MAD 로 흔들던 시절 이름이다.
+ * 지금은 `select_center_offset` 이 항상 0 을 돌려주므로 타점이 하나뿐이고,
+ * 그 하나는 "가정한 사정률에서의 낙찰하한가" 다. "공격적" 이라는 이름은
+ * 다른 선택지가 있는 것처럼 읽혀 오해를 부른다.
  */
-function hasNoHistory(fallbackLevel: string): boolean {
-  return fallbackLevel === "default" || fallbackLevel === "none";
-}
-
-const STRATEGY_LABELS: Record<string, string> = {
-  safe: "안전",
-  normal: "보통",
-  aggressive: "공격적",
-};
-
 const LABEL_MAP: Record<string, string> = {
-  Aggressive: "공격적",
-  Normal: "보통",
-  Safe: "안전",
+  Aggressive: "낙찰하한가 타점",
+  Normal: "낙찰하한가 타점",
+  Safe: "낙찰하한가 타점",
 };
 
 const STRATEGY_TO_LABEL: Record<string, string> = {
@@ -84,13 +70,16 @@ export default function BidCalculator() {
       return;
     }
     const { values, filledLabels, aValueMissing } = parseInfo21cText(text);
-    if (values.bid_notice_id) setBidNoticeId(values.bid_notice_id);
-    if (values.client_name) setClientName(values.client_name);
-    if (values.region) setRegion(values.region);
-    if (values.project_type) setProjectType(values.project_type);
-    if (values.base_price) setBasePrice(values.base_price);
-    if (values.lower_limit_rate) setLowerLimitRate(values.lower_limit_rate);
-    if (values.a_value) setAValue(values.a_value);
+    // ⚠ 못 뽑은 필드는 **비운다**. `if (값) set(값)` 로 두면 앞 공고 값이 남는다.
+    //   실제로 조경 공고 뒤에 건축 공고를 붙여넣었을 때 공종이 "조경" 으로
+    //   남아 엉뚱한 분포를 조회했다. 조용히 틀리는 쪽이라 더 위험하다.
+    setBidNoticeId(values.bid_notice_id ?? "");
+    setClientName(values.client_name ?? "");
+    setRegion(values.region ?? "");
+    setProjectType(values.project_type ?? "");
+    setBasePrice(values.base_price ?? "");
+    setLowerLimitRate(values.lower_limit_rate ?? "");
+    setAValue(values.a_value ?? "");
     setParsedFields(filledLabels);
     setAValueMissing(aValueMissing);
   };
@@ -125,8 +114,6 @@ export default function BidCalculator() {
       setLoading(false);
     }
   };
-
-  const fb = FALLBACK_BADGES[result?.fallback_level ?? ""] ?? FALLBACK_BADGES.default;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -262,48 +249,38 @@ export default function BidCalculator() {
           {/* 계산 결과 요약 */}
           <Card className="bg-muted">
             <CardContent className="p-4 space-y-2">
+              {/*
+                사정률은 **예측하지 않는다.** 복수예비가격 15개 중 4개 추첨의
+                산술평균이라 제도가 만드는 난수이고, 자사 투찰 151건 실측에서
+                예측이 무예측보다 1.58배 나빴다 (RMSE 0.994%p vs 0.630%p,
+                예측력 상관 r=+0.093 p=0.255). 그래서 고정값을 쓴다.
+                예전 UI 는 "예측 사정률 / 근거 / 신뢰도 / 전략" 을 보여줬는데,
+                예측을 끈 뒤로는 "근거: 데이터 없음" 처럼 오해를 부르는 잔재였다.
+              */}
               <div className="flex flex-wrap gap-4 text-sm items-center">
                 <div>
-                  <span className="text-muted-foreground">예측 사정률: </span>
-                  {hasNoHistory(result.fallback_level) ? (
-                    <span className="font-medium text-muted-foreground">데이터 부족</span>
-                  ) : (
-                    <>
-                      <span className="font-medium">{(result.predicted_rate * 100).toFixed(2)}%</span>
-                      {result.prediction_range && (
-                        <span className="text-muted-foreground ml-1.5 font-mono text-xs">
-                          ({(result.prediction_range[0] * 100).toFixed(2)}% ~{" "}
-                          {(result.prediction_range[1] * 100).toFixed(2)}%)
-                        </span>
-                      )}
-                    </>
-                  )}
+                  <span className="text-muted-foreground">적용 사정률: </span>
+                  <span className="font-medium">{(result.predicted_rate * 100).toFixed(2)}%</span>
+                  <span className="text-muted-foreground ml-1.5 text-xs">고정값 · 예측 아님</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-muted-foreground">근거:</span>
-                  <Badge className={fb.className}>{fb.label}</Badge>
-                  {!hasNoHistory(result.fallback_level) && result.confidence_grade && (
-                    <span className="text-muted-foreground">
-                      신뢰도 {CONFIDENCE_LABELS[result.confidence_grade] ?? result.confidence_grade}
+                {result.prediction_range && (
+                  <div>
+                    <span className="text-muted-foreground">제도 산포: </span>
+                    <span className="font-mono text-xs">
+                      {(result.prediction_range[0] * 100).toFixed(2)}% ~{" "}
+                      {(result.prediction_range[1] * 100).toFixed(2)}%
                     </span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">전략: </span>
-                  <span className="font-medium">{STRATEGY_LABELS[result.strategy] ?? result.strategy}</span>
-                </div>
+                  </div>
+                )}
               </div>
 
-              {hasNoHistory(result.fallback_level) ? (
-                <p className="text-xs text-muted-foreground border-t pt-2">
-                  이 공고는 조건에 맞는 과거 이력이 없어 기준값(사정률 1.0)으로 투찰가를 계산했습니다.
-                  아래 금액은 예측이 아니라 하한율 기준 계산값입니다.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground border-t pt-2">
-                  사정률은 개찰 시 추첨으로 정해집니다. 위 구간은 과거 분포의 범위이지 보장값이 아닙니다.
-                </p>
-              )}
+              <p className="text-xs text-muted-foreground border-t pt-2">
+                사정률은 개찰 시 추첨으로 정해진다 — 맞히는 값이 아니다.
+                과거 투찰 기록 분석에서 <span className="font-medium">사정률을 예측하면 예측하지 않을 때보다
+                오차가 커졌고</span>, 그래서 실제 사정률 분포 중앙값 바로 위인{" "}
+                <span className="font-mono">{(result.predicted_rate * 100).toFixed(2)}%</span> 를 고정으로 쓴다.
+                위 구간은 제도가 만드는 산포이지 보장 범위가 아니다.
+              </p>
             </CardContent>
           </Card>
 
@@ -322,6 +299,9 @@ export default function BidCalculator() {
                     </p>
                     <p className="text-2xl font-bold">{formatNumber(bid.price_krw)}원</p>
                     <p className="text-lg text-primary">{bid.rate_pct}%</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      (기초금액 × {(result.predicted_rate * 100).toFixed(2)}% − A값) × 하한율 + A값
+                    </p>
                     {bid.a_value > 0 && (
                       <p className="text-xs text-muted-foreground">A값 {formatNumber(bid.a_value)}원 반영</p>
                     )}

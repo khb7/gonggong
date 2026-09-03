@@ -21,6 +21,20 @@ def clear_cache():
     cache.invalidate()
 
 
+@pytest.fixture(autouse=True)
+def no_precomputed():
+    """사전계산 표는 "비어 있음" 으로 둔다.
+
+    이 파일은 캐시와 fallback 결정 로직만 본다. db 가 AsyncMock 이라
+    사전계산 조회가 실제 SQL 을 타면 코루틴이 그대로 흘러 터진다.
+    사전계산 경로 자체는 tests/test_distribution_precompute.py 에서 검증한다.
+    """
+    with patch("app.db.crud_distribution.get_precomputed_distribution",
+               AsyncMock(return_value=None)),          patch("app.db.crud_distribution.get_precomputed_scope_stat",
+               AsyncMock(return_value=None)):
+        yield
+
+
 # ── get / set ─────────────────────────────────────────────────
 
 def test_cache_miss_returns_none():
@@ -194,7 +208,7 @@ async def test_resolve_uses_client_when_enough_notices():
                AsyncMock(return_value=(40, 14989))), \
          patch("app.db.crud_distribution.get_offset_distribution",
                AsyncMock(return_value=_ROWS_A)):
-        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울", "실내건축", 3)
+        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울")
 
     assert rows == _ROWS_A
     assert scope.level == "client"
@@ -210,7 +224,7 @@ async def test_resolve_falls_back_to_global_when_sparse():
                AsyncMock(return_value=(2, 500))), \
          patch("app.db.crud_distribution.get_offset_distribution",
                AsyncMock(return_value=_ROWS_B)):
-        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울", "실내건축", 3)
+        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울")
 
     assert rows == _ROWS_B
     assert scope.level == "global"
@@ -226,7 +240,7 @@ async def test_resolve_skips_client_and_uses_region():
                AsyncMock(side_effect=[(3, 700), (58, 20000)])), \
          patch("app.db.crud_distribution.get_offset_distribution",
                AsyncMock(return_value=_ROWS_A)):
-        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울", "실내건축", 3)
+        rows, scope = await resolve_offset_distribution(db, "발주처A", "서울")
 
     assert scope.level == "region"
     assert scope.label == "서울"
@@ -241,6 +255,27 @@ async def test_resolve_counts_notices_not_rows():
                AsyncMock(return_value=(1, 246))), \
          patch("app.db.crud_distribution.get_offset_distribution",
                AsyncMock(return_value=_ROWS_B)):
-        _, scope = await resolve_offset_distribution(db, "발주처A", None, None, None)
+        _, scope = await resolve_offset_distribution(db, "발주처A", None)
 
     assert scope.level == "global"
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_type_bucket_and_falls_through_to_global():
+    """공종+버킷 계층은 폐기됐다 — 발주처·지역이 미달이면 곧장 글로벌로 간다.
+
+    2026 홀드아웃 백테스트에서 type_bucket 밴드 적중률이 74.8% 로
+    같은 공고의 global 76.7% 보다 낮았다. 표본만 줄이고 신호는 흐려진다.
+    """
+    db = AsyncMock()
+    # 호출 순서: client(미달) → region(미달) → global
+    counts = AsyncMock(side_effect=[(3, 700), (4, 800), (50, 20000)])
+    with patch("app.db.crud_distribution.count_offset_distribution", counts), \
+         patch("app.db.crud_distribution.get_offset_distribution",
+               AsyncMock(return_value=_ROWS_B)):
+        _, scope = await resolve_offset_distribution(db, "발주처A", "서울")
+
+    assert scope.level == "global"
+    assert scope.label is None
+    # type_bucket 후보가 사라졌으니 집계는 3번(client/region/global)만 돈다
+    assert counts.call_count == 3

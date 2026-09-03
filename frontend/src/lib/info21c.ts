@@ -71,14 +71,52 @@ export function parseInfo21cText(text: string): ParsedInfo21c {
     values.lower_limit_rate = String(Number((Number(lowerLimit[1]) / 100).toFixed(decimals)));
   }
 
-  const client = text.match(/발주기관\s+(\S+)/);
-  if (client) values.client_name = client[1];
+  // 발주기관은 **공백을 포함한 한 덩어리**다 ("경기도 안산시 상록구").
+  //
+  // `\S+` 로 잡으면 첫 토큰만 남아 "경기도" 가 된다. 그러면 client 레벨
+  // 분포 조회가 실제 발주처를 못 찾고 지역 레벨로 조용히 떨어진다.
+  // info21c 는 표를 평문으로 흘려주므로 값이 탭 뒤 또는 다음 줄에 온다:
+  //
+  //     지역\t경기\t발주기관\t\n경기도 안산시 상록구\n     ← 다음 줄
+  //     수요기관\t경기도 안산시 상록구\t계약방법\t수의     ← 같은 줄, 탭 구분
+  //
+  // 그래서 앞쪽 공백은 모두 건너뛰고 **탭/줄바꿈 전까지** 잡는다.
+  const client = text.match(/발주기관\s+([^\t\n]+)/);
+  if (client) values.client_name = client[1].trim();
 
-  const region = text.match(/지역\s+(\S+)/);
-  if (region) values.region = region[1];
+  const region = text.match(/지역\s+([^\t\n]+)/);
+  if (region) values.region = region[1].trim();
 
-  if (/실내건축/.test(text)) values.project_type = "실내건축";
-  else if (/조경/.test(text)) values.project_type = "조경";
+  // 공종은 `bid_license_types.type_name` 과 같은 값이어야 분포 조회가 매칭된다.
+  //
+  // `업종` 줄의 **첫 항목**이 주력 공종이다 ("건축,토건" → 건축).
+  // 순서가 중요하다 — "실내건축" 은 "건축" 을, "토목건축" 은 "토목" 을 포함하므로
+  // 좁은 것부터 본다.
+  const TRADES: [RegExp, string][] = [
+    [/실내건축/, "실내건축"],
+    [/금속창호|지붕건축물/, "금속창호.지붕건축물"],
+    [/도장|습식|방수|석공/, "도장.습식.방수.석공"],
+    [/지반조성|포장/, "지반조성.포장"],
+    [/비계|구조물해체/, "비계구조"],
+    [/철근콘크리트|철콘/, "철콘"],
+    [/철강구조물/, "철강구조물"],
+    [/기계|가스/, "기계가스"],
+    [/상.?하수도/, "상.하수도"],
+    [/산림/, "산림사업"],
+    [/조경/, "조경"],
+    [/토목건축|토건/, "토건"],
+    [/건축/, "건축"],
+    [/토목/, "토목"],
+  ];
+
+  const matchTrade = (s: string): string | undefined =>
+    TRADES.find(([re]) => re.test(s))?.[1];
+
+  // 1순위: `업종` 줄의 첫 항목. 2순위: 본문 전체 (조각만 붙여넣은 경우).
+  const tradeLine = text.match(/업종[ \t]*([^\r\n]+)/)?.[1];
+  const primary = tradeLine?.split(",")[0];
+  const trade = (primary && matchTrade(primary)) ?? matchTrade(text);
+  if (trade) values.project_type = trade;
 
   const noticeId = text.match(/공고번호\s+(\S+)/);
   if (noticeId) values.bid_notice_id = noticeId[1];

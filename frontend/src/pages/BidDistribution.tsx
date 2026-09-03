@@ -11,7 +11,9 @@ import {
   winRateIsBroader,
   DEFAULT_QUALITY,
   computeLocalPosition,
+  computeMyOffsetPct,
   findWinZone,
+  findBestWinRateBin,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
   type LocalPosition,
@@ -24,6 +26,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, ChevronDown, ChevronUp, ClipboardPaste } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+/**
+ * 발주처 적용 계약법 라벨.
+ *
+ * 복수예비가격 생성범위가 규정으로 정해져 있어(국가계약 ±2% / 지방계약 ±3%)
+ * 사정률 산포도 거기서 따라온다. 백엔드 app/engine/contract_law.py 와 짝이다.
+ */
+const LAW_LABEL: Record<string, string> = {
+  national: "국가계약 ±2%",
+  local: "지방계약 ±3%",
+  agency: "지방조달청 대행",
+  unknown: "구분 불명",
+};
 
 // ── 커스텀 툴팁 ──────────────────────────────────────────────────────────
 
@@ -123,13 +138,16 @@ export default function BidDistribution() {
     setPasteText(text);
     if (!text.trim()) { setParsedFields([]); setAValueMissing(false); return; }
     const { values, filledLabels, aValueMissing } = parseInfo21cText(text);
-    if (values.bid_notice_id) setBidNoticeId(values.bid_notice_id);
-    if (values.client_name) setClientName(values.client_name);
-    if (values.region) setRegion(values.region);
-    if (values.project_type) setProjectType(values.project_type);
-    if (values.base_price) setBasePrice(values.base_price);
-    if (values.lower_limit_rate) setLowerLimitRate(values.lower_limit_rate);
-    if (values.a_value) setAValue(values.a_value);
+    // ⚠ 못 뽑은 필드는 **비운다**. `if (값) set(값)` 로 두면 앞 공고 값이 남는다.
+    //   실제로 조경 공고 뒤에 건축 공고를 붙여넣었을 때 공종이 "조경" 으로
+    //   남아 엉뚱한 분포를 조회했다. 조용히 틀리는 쪽이라 더 위험하다.
+    setBidNoticeId(values.bid_notice_id ?? "");
+    setClientName(values.client_name ?? "");
+    setRegion(values.region ?? "");
+    setProjectType(values.project_type ?? "");
+    setBasePrice(values.base_price ?? "");
+    setLowerLimitRate(values.lower_limit_rate ?? "");
+    setAValue(values.a_value ?? "");
     setParsedFields(filledLabels);
     setAValueMissing(aValueMissing);
   };
@@ -193,6 +211,19 @@ export default function BidDistribution() {
   // 낙찰 집중 구간 — win_count 만 쓰므로 필터 레벨과 무관하게 유효하다
   const winZone = useMemo(() => findWinZone(prepared.bins), [prepared]);
 
+  // 추천 투찰가 — 낙찰 빈도가 가장 높았던 구간을 금액으로 환산한다.
+  // 예측이 아니라 "과거에 가장 유리했던 자리"다. 후보 표본이 모자라면 null 이고,
+  // 그때는 카드를 아예 그리지 않는다 (없는 근거로 숫자를 내지 않는다).
+  const bestBin = useMemo(() => {
+    if (!result) return null;
+    return findBestWinRateBin(
+      prepared.bins,
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+    );
+  }, [result, prepared]);
+
   // 구간 안팎 낙찰률 비교. count(필터 표본)와 win_count(전체 표본)의
   // 출처가 다르면 성립하지 않으므로 같은 표본일 때만 계산한다.
   const zoneRate = useMemo(() => {
@@ -237,11 +268,17 @@ export default function BidDistribution() {
     return { zoneWidth, bandWidth: bandLabels.width, tooWide: bandLabels.width >= zoneWidth };
   }, [winZone, bandLabels]);
 
-  // offset → 원화 변환 (표시용)
+  // 입력창 옆 즉시 피드백용 offset.
+  // 「내 offset」 카드와 반드시 같은 값이어야 하므로 같은 헬퍼를 쓴다 —
+  // 예전에 여기서 A값 없이 따로 계산해 같은 화면에 offset 이 두 개 떴다.
   const myOffsetPct = useMemo(() => {
     if (!result || !myBidPrice) return null;
-    const raw = (Number(myBidPrice) / result.base_price - result.lower_limit_rate) * 100;
-    return Math.round(raw * 10) / 10;
+    return computeMyOffsetPct(
+      Number(myBidPrice),
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+    );
   }, [result, myBidPrice]);
 
   return (
@@ -512,6 +549,44 @@ export default function BidDistribution() {
                 </ComposedChart>
               </ResponsiveContainer>
 
+              {/* 추천 투찰가 — 낙찰 빈도 최대 구간 */}
+              {bestBin && (
+                <div className="mx-2 mt-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-3">
+                  <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                    <span className="text-xs text-muted-foreground">추천 투찰가</span>
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      offset {bestBin.offset_pct > 0 ? "+" : ""}{bestBin.offset_pct.toFixed(1)}%
+                    </Badge>
+                  </div>
+                  <p className="text-2xl font-bold font-mono tracking-tight mt-0.5">
+                    {formatNumber(bestBin.estimated_price)}
+                    <span className="text-sm font-normal text-muted-foreground ml-1">원</span>
+                  </p>
+                  <p className="text-xs mt-1.5">
+                    이 구간 과거 낙찰 빈도{" "}
+                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                      {bestBin.historical_win_rate.toFixed(2)}%
+                    </span>
+                    <span className="text-muted-foreground">
+                      {" "}(참여 {formatNumber(bestBin.sample_count)}건 중 낙찰 {formatNumber(bestBin.win_count)}건)
+                    </span>
+                    {bestBin.multiple !== null && (
+                      <span>
+                        {" "}— 전체 평균의{" "}
+                        <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                          {bestBin.multiple.toFixed(1)}배
+                        </span>
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-2 pt-1.5 border-t border-primary/20">
+                    ⚠ 예정가격은 개찰 전까지
+                    {result.preprice_sd_pct > 0 ? ` ±${result.preprice_sd_pct.toFixed(1)}% ` : " "}
+                    흔들립니다. 이 금액은 과거 분포에서 가장 유리했던 자리일 뿐, 확정값이 아닙니다.
+                  </p>
+                </div>
+              )}
+
               {/* 집중 구간 요약 */}
               {winZone ? (
                 <div className="mx-2 mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2.5 text-xs space-y-1">
@@ -603,11 +678,24 @@ export default function BidDistribution() {
                   <p className={`text-xl font-bold font-mono ${myLocalPos.offset_pct < 0 ? "text-rose-600" : "text-emerald-600"}`}>
                     {myLocalPos.offset_pct > 0 ? "+" : ""}{myLocalPos.offset_pct.toFixed(1)}%
                   </p>
-                  {myLocalPos.offsetLowPct != null && myLocalPos.offsetHighPct != null && (
+                  {myLocalPos.offsetLowPct != null && myLocalPos.offsetHighPct != null ? (
                     <p className="text-[10px] text-muted-foreground font-mono">
                       {myLocalPos.offsetLowPct.toFixed(1)}% ~ {myLocalPos.offsetHighPct.toFixed(1)}% (±1σ)
                     </p>
-                  )}
+                  ) : result && result.preprice_sd_pct > 0 ? (
+                    /*
+                      σ 밴드를 못 그린 경우의 대체 표시. 투찰 시점엔 예정가격을
+                      모르므로 위 값은 사정률≈1.0 근사다. 아무것도 안 붙이면
+                      0.1% 해상도의 한 칸에 정확히 있는 것처럼 읽힌다.
+                    */
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      ± {result.preprice_sd_pct.toFixed(2)}%p
+                      {" "}
+                      <span className="text-muted-foreground/70">
+                        (사정률 산포 · {LAW_LABEL[result.contract_law] ?? "구분 불명"})
+                      </span>
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
               <Card>

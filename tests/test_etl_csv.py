@@ -74,29 +74,30 @@ def test_price_method_default_when_column_missing():
     assert df.iloc[0]["price_method"] == "기타"
 
 
-# ── 1순위사정율 처리 ─────────────────────────────────────────────────────────
+# ── 사정률(adjustment_rate) 처리 ───────────────────────────────────────────
+# 사정률 = 낙찰금액 / 기초금액. 원본에 1순위기초대비(%) 컬럼이 있으면 그 값을 쓴다.
 
-def test_adjustment_rate_from_1순위사정율_when_column_exists():
-    """1순위사정율 컬럼이 있으면 직접 사용한다 (퍼센트 → 소수 변환)."""
-    row = {**BASE_ROW, "1순위사정율": "99.5"}  # 퍼센트 단위
+def test_adjustment_rate_from_1순위기초대비_when_column_exists():
+    """1순위기초대비 컬럼이 있으면 직접 사용한다 (퍼센트 → 소수 변환)."""
+    row = {**BASE_ROW, "1순위기초대비": "87.9"}  # 퍼센트 단위
     path = make_csv([row])
     df = extract_and_transform(path)
     assert len(df) == 1
-    assert abs(float(df.iloc[0]["adjustment_rate"]) - 0.995) < 0.0001
+    assert abs(float(df.iloc[0]["adjustment_rate"]) - 0.879) < 0.0001
 
 
 def test_adjustment_rate_computed_when_column_missing():
-    """1순위사정율 컬럼이 없으면 예산가격/기초금액으로 계산한다."""
+    """1순위기초대비 컬럼이 없으면 낙찰금액/기초금액으로 계산한다."""
     path = make_csv([BASE_ROW])
     df = extract_and_transform(path)
     assert len(df) == 1
-    # 예산가격=기초금액=100000000 → adjustment_rate = 1.0
-    assert abs(float(df.iloc[0]["adjustment_rate"]) - 1.0) < 0.0001
+    # 투찰금액=87,745,000 / 기초금액=100,000,000 → 0.87745
+    assert abs(float(df.iloc[0]["adjustment_rate"]) - 0.87745) < 0.0001
 
 
-def test_adjustment_rate_from_1순위사정율_out_of_range_is_dropped():
-    """1순위사정율이 범위(0.95~1.05) 밖이면 해당 행을 드롭한다."""
-    row = {**BASE_ROW, "1순위사정율": "50.0"}  # 0.50 → 범위 밖
+def test_adjustment_rate_from_1순위기초대비_out_of_range_is_dropped():
+    """1순위기초대비가 범위(0.70~1.00) 밖이면 해당 행을 드롭한다."""
+    row = {**BASE_ROW, "1순위기초대비": "50.0"}  # 0.50 → 범위 밖
     path = make_csv([row])
     df = extract_and_transform(path)
     assert len(df) == 0  # 드롭됨

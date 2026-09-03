@@ -118,9 +118,21 @@ export function getClients() {
   return request<ClientStat[]>("/api/v1/stats/clients");
 }
 
-export function getDistribution(projectType?: string) {
-  const q = projectType ? `?project_type=${encodeURIComponent(projectType)}` : "";
-  return request<DistributionData>(`/api/v1/stats/distribution${q}`);
+/**
+ * 통계 분포 지표. 두 값은 전혀 다르고 자릿수도 다르다 — 섞으면 안 된다.
+ *
+ *   preprice = 예정가격 / 기초금액   중앙 0.999   ← 사정률. 복수예비가격이 만드는 제도적 난수
+ *   award    = 낙찰가   / 기초금액   중앙 0.883   ← 낙찰률. 하한율 × 사정률에 가깝다
+ */
+export type DistributionMetric = "preprice" | "award";
+
+export function getDistribution(
+  projectType?: string,
+  metric: DistributionMetric = "preprice",
+) {
+  const params = new URLSearchParams({ metric });
+  if (projectType) params.set("project_type", projectType);
+  return request<DistributionData>(`/api/v1/stats/distribution?${params}`);
 }
 
 export interface SchedulerStatus {
@@ -168,7 +180,7 @@ export interface BidPosition {
 }
 
 /** 분포 계산에 쓰인 fallback 레벨 */
-export type DistributionLevel = "client" | "region" | "type_bucket" | "global";
+export type DistributionLevel = "client" | "region" | "global";
 
 export interface DistributionQuality {
   /** 선택된 레벨의 참여자 수 (막대 높이의 합) */
@@ -193,6 +205,13 @@ export interface DistributionResult {
   /** 계산에 반영된 A값 (원). 0이면 A값 없는 공고 */
   a_value: number;
   estimated_participants: number;
+  /** 발주처 적용 계약법: "national"(±2%) | "local"(±3%) | "agency"(지방조달청·혼합) | "unknown" */
+  contract_law: string;
+  /**
+   * 사정률 표준편차 (%). 투찰 시점에 예정가격을 모르므로 내 위치는 이 폭만큼 번져 있다.
+   * 복수예비가격 생성범위가 규정으로 정해져 있어(국가 ±2% / 지방 ±3%) 추정값이 아니다.
+   */
+  preprice_sd_pct: number;
   g2b_fetch_status: string;
   /**
    * 사정률 표준편차 (소수). 내 위치 오차 밴드의 폭이 되는 값이다.

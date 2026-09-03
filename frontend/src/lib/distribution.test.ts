@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { prepareDistribution, computeLocalPosition, computeOffsetBand } from "@/lib/distribution";
+import {
+  prepareDistribution,
+  computeLocalPosition,
+  computeOffsetBand,
+  computeMyOffsetPct,
+  findBestWinRateBin,
+} from "@/lib/distribution";
 import type { OffsetBucket } from "@/lib/api";
 
 // ── 헬퍼 ────────────────────────────────────────────────────────────────
@@ -197,14 +203,6 @@ describe("describeScope", () => {
     expect(s.text).toBe("서울 지역 기준");
     expect(s.tone).toBe("broad");
     expect(s.hint).toContain("발주처 표본이 부족");
-  });
-
-  it("공종 레벨이면 공종명을 쓴다", () => {
-    const s = describeScope(
-      q({ distribution_level: "type_bucket", distribution_label: "실내건축", sample_notices: 120 }),
-    );
-    expect(s.text).toBe("실내건축 공종 기준");
-    expect(s.tone).toBe("broad");
   });
 
   it("global이면 전체 기준으로 표시한다", () => {
@@ -458,5 +456,134 @@ describe("computeLocalPosition — 오차 밴드", () => {
     const pos = computeLocalPosition(900_000_000, BASE, LLR, bins)!;
     expect(pos.offsetLowPct).toBeNull();
     expect(pos.offsetHighPct).toBeNull();
+  });
+});
+
+describe("computeMyOffsetPct — 배지와 카드가 같은 값을 써야 한다", () => {
+  const basePrice = 800_000_000;
+  const llr = 0.87745;
+
+  it("A값을 반영한다", () => {
+    const a = 30_000_000;
+    // 낙찰하한가 = (기초금액 − A) × 하한율 + A
+    const floor = (basePrice - a) * llr + a;
+    expect(computeMyOffsetPct(floor, basePrice, llr, a)).toBeCloseTo(0, 1);
+  });
+
+  it("A값을 빼먹으면 오른쪽으로 밀린다 — 실제로 났던 버그", () => {
+    const a = 30_000_000;
+    const price = 706_000_000;
+    const withA = computeMyOffsetPct(price, basePrice, llr, a)!;
+    const withoutA = computeMyOffsetPct(price, basePrice, llr, 0)!;
+
+    // 화면에 offset 이 0.0% 와 +0.5% 두 개로 떴던 그 차이다
+    expect(withA).toBeCloseTo(0.0, 1);
+    expect(withoutA).toBeCloseTo(0.5, 1);
+  });
+
+  it("computeLocalPosition 과 값이 일치한다", () => {
+    const a = 30_000_000;
+    const price = 706_000_000;
+    const bins = Array.from({ length: 61 }, (_, i) => ({
+      offset_pct: Math.round((i - 30) * 10) / 100,
+      count: 10,
+      win_count: 1,
+      historical_win_rate: 10,
+    }));
+    const badge = computeMyOffsetPct(price, basePrice, llr, a);
+    const card = computeLocalPosition(price, basePrice, llr, bins, a);
+    expect(card).not.toBeNull();
+    expect(badge).toBe(card!.offset_pct);
+  });
+
+  it("투찰가나 기초금액이 없으면 null", () => {
+    expect(computeMyOffsetPct(0, basePrice, llr, 0)).toBeNull();
+    expect(computeMyOffsetPct(700_000_000, 0, llr, 0)).toBeNull();
+  });
+});
+
+// ── findBestWinRateBin ──────────────────────────────────────────────────
+
+describe("findBestWinRateBin", () => {
+  const basePrice = 800_000_000;
+  const llr = 0.87745;
+
+  it("낙찰 빈도가 가장 높은 bin 을 고른다", () => {
+    const r = findBestWinRateBin(
+      [bin(-0.2, 100, 5), bin(-0.1, 100, 20), bin(0.0, 100, 8)],
+      basePrice,
+      llr,
+    );
+    expect(r).not.toBeNull();
+    expect(r!.offset_pct).toBe(-0.1);
+    expect(r!.historical_win_rate).toBeCloseTo(20, 5);
+  });
+
+  it("낙찰 표본이 적은 꼬리 bin 은 후보에서 제외한다", () => {
+    // -2.0 은 참여 3건 중 1건 낙찰 = 33% 지만 낙찰 표본이 1건뿐이라 노이즈다
+    const r = findBestWinRateBin(
+      [bin(-2.0, 3, 1), bin(-0.1, 100, 20)],
+      basePrice,
+      llr,
+    );
+    expect(r!.offset_pct).toBe(-0.1);
+  });
+
+  it("낙찰 빈도가 같으면 offset 이 높은 쪽을 고른다", () => {
+    // 같은 확률이면 비싸게 받는 쪽이 낫다
+    const r = findBestWinRateBin(
+      [bin(-0.3, 100, 10), bin(0.4, 100, 10)],
+      basePrice,
+      llr,
+    );
+    expect(r!.offset_pct).toBe(0.4);
+  });
+
+  it("후보가 하나도 없으면 null 을 반환한다", () => {
+    // 전부 낙찰 표본 미달 — 억지로 숫자를 만들지 않는다
+    expect(findBestWinRateBin([bin(-0.2, 50, 2), bin(0.1, 40, 3)], basePrice, llr)).toBeNull();
+  });
+
+  it("빈 배열이면 null 을 반환한다", () => {
+    expect(findBestWinRateBin([], basePrice, llr)).toBeNull();
+  });
+
+  it("historical_win_rate 가 null 인 bin 은 무시한다", () => {
+    const gap: OffsetBucket = {
+      offset_pct: 0.5,
+      count: 0,
+      win_count: 0,
+      historical_win_rate: null,
+    };
+    const r = findBestWinRateBin([gap, bin(-0.1, 100, 20)], basePrice, llr);
+    expect(r!.offset_pct).toBe(-0.1);
+  });
+
+  it("offset 을 금액으로 환산한다 — A값 반영", () => {
+    const a = 30_000_000;
+    const r = findBestWinRateBin([bin(0.2, 100, 20)], basePrice, llr, a)!;
+    // 투찰가 = (기초금액 − A) × (법정하한율 + offset) + A
+    expect(r.estimated_price).toBe(Math.round((basePrice - a) * (llr + 0.002) + a));
+  });
+
+  it("환산한 금액을 되돌리면 같은 offset 이 나온다", () => {
+    const a = 30_000_000;
+    const r = findBestWinRateBin([bin(0.2, 100, 20)], basePrice, llr, a)!;
+    expect(computeMyOffsetPct(r.estimated_price, basePrice, llr, a)).toBe(r.offset_pct);
+  });
+
+  it("A값이 기초금액 이상이면 이상값으로 보고 무시한다", () => {
+    const r = findBestWinRateBin([bin(0.2, 100, 20)], basePrice, llr, basePrice + 1)!;
+    expect(r.estimated_price).toBe(Math.round(basePrice * (llr + 0.002)));
+  });
+
+  it("전체 평균 낙찰 빈도 대비 배수를 계산한다", () => {
+    // 10/100 과 30/100 → 전체 평균 20%, 최고 30% → 1.5배
+    const r = findBestWinRateBin([bin(0.0, 100, 10), bin(0.1, 100, 30)], basePrice, llr)!;
+    expect(r.multiple).toBeCloseTo(1.5, 5);
+  });
+
+  it("기초금액이 없으면 null 을 반환한다", () => {
+    expect(findBestWinRateBin([bin(-0.1, 100, 20)], 0, llr)).toBeNull();
   });
 });

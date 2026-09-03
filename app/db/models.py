@@ -59,6 +59,22 @@ class BidsHistory(Base):
         comment="나라장터 공사 분류 코드 (g2b분류)"
     )
 
+    # ── 2026-08-26 추가 (T-011) ──────────────────────────────────────────
+    # 전부 nullable. 재적재 전 기존 행은 NULL 이라 '미판정'과 False 가 구분된다.
+    notice_title: Mapped[str | None] = mapped_column(
+        String(300), nullable=True, comment="공고명 원문 (대괄호 태그의 출처)"
+    )
+    preprice_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 6), nullable=True,
+        comment="사정률 = 예정가격 / 기초금액. adjustment_rate(=낙찰가/기초금액)와 다른 값이다"
+    )
+    est_price: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="예정가격 (원)"
+    )
+    lower_limit_price: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="낙찰하한가 (원). A값 역산에 필요"
+    )
+
     # ── 2026-08-27 추가: A값 분리 ────────────────────────────
     #
     # lower_limit_rate 컬럼에는 두 가지 의미가 섞여 들어왔다.
@@ -124,6 +140,34 @@ class BidLicenseType(Base):
     )
 
 
+class BidTag(Base):
+    """
+    공고명 대괄호 태그.
+
+    Info21c 공고명에는 계약 조건이 대괄호로 붙는다.
+    예) '안성공도 국민임대주택 유지보수공사 [정][실적][공의][A값][순]'
+
+    실측상 참여자 수를 크게 가르는 축이다 (2026-08-26, 13,514건 기준):
+        [시담] 평균  1.0개사 — 경쟁입찰이 아니므로 분포 표본에서 제외해야 한다
+        [현필] 평균  3.1개사 — 현장설명 필수. 진입장벽이 경쟁을 막는다
+        [관내] 평균 67.8개사
+        [순]   평균 895.6개사
+    """
+
+    __tablename__ = "bid_tags"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tag", name="uq_bid_tags_project_tag"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="나라장터 공고 번호"
+    )
+    tag: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True, comment="태그명 (대괄호 제외). 예: A값, 현필, 시담"
+    )
+
+
 class BidParticipants(Base):
     """
     입찰 공고별 전체 참여자 투찰 데이터.
@@ -163,6 +207,67 @@ class BidParticipants(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OffsetHistogram(Base):
+    """사전 계산된 offset 히스토그램.
+
+    참여자 4.5M 행을 요청마다 스캔하면 RAM 1GB 서버(OCI E2.1.Micro)가
+    스래싱으로 멈춘다. 실제로 한 번 멈췄다. SQL 집계로 메모리는 해결됐지만
+    속도가 남는다 (서버 실측: client 0.6s / region 22.3s / global 69.1s).
+
+    넓은 스코프는 값이 자주 바뀌지 않으므로 미리 계산해 둔다.
+    `scripts/build_offset_histogram.py` 가 채우고, 조회는 이 표를 먼저 본다.
+
+    client 레벨은 넣지 않는다 — 0.6s 로 충분히 빠르고 발주처 종류가 많다.
+
+    규모: 19 스코프(global 1 + region 18) × 평균 490 bin ≈ 9,300 행.
+
+    공종+버킷(type_bucket) 스코프는 2026 홀드아웃 백테스트에서 밴드 적중률이
+    global 보다 낮아 제거했다 (74.8% vs 76.7%).
+    """
+
+    __tablename__ = "offset_histogram"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_level", "scope_key", "offset_pct", name="uq_offset_histogram_bin"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_level: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True,
+        comment='"global" | "region"',
+    )
+    scope_key: Mapped[str] = mapped_column(
+        String(120), nullable=False,
+        comment='global="" / region="경기"',
+    )
+    offset_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, comment="bin 중심 offset (%, 0.1 단위)"
+    )
+    count: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여 건수")
+    win_count: Mapped[int] = mapped_column(Integer, nullable=False, comment="낙찰 건수")
+
+
+class OffsetScopeStat(Base):
+    """사전 계산된 스코프별 공고 수·참여자 수.
+
+    fallback 레벨 채택은 참여자 행 수가 아니라 **공고 수** 로 판단한다
+    (공고 1건에 수백 명이 참여하므로 행 수로 재면 한 건이 분포로 둔갑한다).
+    그 판단을 하려면 스코프마다 세어야 하는데, 그 COUNT 쿼리도 넓은 스코프에서는
+    수십 초가 걸린다. 그래서 히스토그램과 함께 미리 계산해 둔다.
+    """
+
+    __tablename__ = "offset_scope_stat"
+
+    scope_level: Mapped[str] = mapped_column(String(20), primary_key=True)
+    scope_key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    notices: Mapped[int] = mapped_column(Integer, nullable=False, comment="공고 수")
+    bids: Mapped[int] = mapped_column(Integer, nullable=False, comment="참여자 행 수")
+    built_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 

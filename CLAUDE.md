@@ -260,6 +260,24 @@ app/
 - `crud.py`는 읽기 전용, 쓰기는 `crud_write.py`에서 분리
 - 낙찰하한율·A값은 **모르면 채우지 말고 실패시킨다** (위 '하지 말아야 할 것' 참고)
 
+### 배포 서버는 RAM 1GB다 (설계 제약)
+
+`bid.fp-desk.com` 은 OCI `VM.Standard.E2.1.Micro` — **1 OCPU / RAM 1GB**.
+DB 가 703MB 라 페이지 캐시에 다 못 올라간다. **로컬 성능은 근거가 못 된다.**
+
+2026-08-28 에 분포 요청이 참여자 4,490,354 행을 파이썬 리스트로 끌어오면서
+서버가 스래싱으로 멈췄고 VM 을 강제 재부팅했다. 그래서:
+
+- **행을 파이썬으로 끌어오지 말 것.** 집계는 SQL 에서 한다
+  (`bid_participants` 4,656,914 행 / SQL 집계 시 RSS 14.6MB)
+- **넓은 스코프는 사전계산.** `scripts/build_offset_histogram.py` 를 **로컬에서** 돌린다.
+  ETL 로 데이터를 갱신했으면 이것도 다시 돌려야 한다
+- **SQLite `alter_column` 금지.** 테이블 재작성을 유발한다. alembic autogenerate 가
+  무관한 `NOT NULL` 변경을 끼워 넣으므로 마이그레이션은 눈으로 확인할 것
+- **배포 전 서버에서 재라.** DB 파일만 `/tmp` 에 놓고 쿼리 시간·RSS 를 측정한 뒤 교체한다
+
+상세: `docs/deployment.md` 10절
+
 ---
 
 ## Dev 세션 시작 프로토콜 (필수)

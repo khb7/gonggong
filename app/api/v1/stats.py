@@ -5,7 +5,7 @@ app/api/v1/stats.py
   GET  /api/v1/stats/overview       — 전체 현황
   GET  /api/v1/stats/clients        — 발주처별 통계
   GET  /api/v1/stats/regions        — 지역별 통계
-  GET  /api/v1/stats/distribution   — 사정률 분포 (히스토그램)
+  GET  /api/v1/stats/distribution   — 분포 (히스토그램). metric=preprice(사정률) | award(낙찰률)
   GET  /api/v1/stats/backfill       — 백필 상태 조회
   POST /api/v1/stats/backfill       — 백필 실행 요청
 """
@@ -14,7 +14,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,14 +46,21 @@ class OverviewResponse(BaseModel):
 class ClientStat(BaseModel):
     client_name: str
     record_count: int
-    avg_adjustment_rate: float
+    # ⚠ 사정률이 아니다. `bids_history.adjustment_rate` = **낙찰가/기초금액**(중앙 0.883).
+    #   진짜 사정률(예정가격/기초금액, 중앙 0.999)은 `preprice_rate` 컬럼이다.
+    #   필드명은 기존 클라이언트 호환을 위해 그대로 둔다.
+    avg_adjustment_rate: float = Field(
+        ..., description="평균 낙찰률 (낙찰가/기초금액). 사정률이 아니다."
+    )
     avg_participants: float
 
 
 class RegionStat(BaseModel):
     region: str
     record_count: int
-    avg_adjustment_rate: float
+    avg_adjustment_rate: float = Field(
+        ..., description="평균 낙찰률 (낙찰가/기초금액). 사정률이 아니다."
+    )
 
 
 class DistributionResponse(BaseModel):
@@ -185,7 +192,10 @@ async def get_client_stats(
     project_type: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """발주처별 낙찰 건수 + 평균 사정률 + 평균 참여업체 수 (상위 N개)."""
+    """발주처별 낙찰 건수 + 평균 낙찰률 + 평균 참여업체 수 (상위 N개).
+
+    ⚠ `adjustment_rate` 는 낙찰가/기초금액이다. 사정률(예정가격/기초금액)이 아니다.
+    """
     q = (
         select(
             BidsHistory.client_name,
@@ -217,7 +227,7 @@ async def get_region_stats(
     project_type: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """지역별 낙찰 건수 + 평균 사정률."""
+    """지역별 낙찰 건수 + 평균 낙찰률 (낙찰가/기초금액). 사정률이 아니다."""
     q = (
         select(
             BidsHistory.region,
@@ -245,10 +255,30 @@ async def get_region_stats(
 async def get_distribution(
     project_type: Optional[str] = Query(default=None),
     bins: int = Query(default=40, ge=5, le=200),
+    metric: str = Query(
+        default="preprice",
+        pattern="^(preprice|award)$",
+        description='"preprice" = 사정률(예정가격/기초금액) | "award" = 낙찰률(낙찰가/기초금액)',
+    ),
     db: AsyncSession = Depends(get_db),
 ):
-    """사정률 분포 히스토그램 데이터."""
-    q = select(BidsHistory.adjustment_rate)
+    """분포 히스토그램.
+
+    두 지표는 전혀 다른 값이고 자릿수도 다르다. 섞으면 안 된다.
+
+        preprice = 예정가격 / 기초금액   중앙 0.99933   ← **사정률**.
+                   복수예비가격 15개 중 4개 추첨 평균이 만드는 제도적 난수.
+        award    = 낙찰가   / 기초금액   중앙 0.88342   ← 낙찰률.
+                   하한율 × 사정률에 가깝다.
+
+    ⚠ `bids_history.adjustment_rate` 컬럼명이 사정률처럼 보이지만 실제 내용은
+      **낙찰가/기초금액**(=award)이다. 이 엔드포인트가 오래 그 값을 "사정률 분포"로
+      표시해 왔다. 진짜 사정률은 `preprice_rate` 컬럼이다.
+    """
+    column = (
+        BidsHistory.preprice_rate if metric == "preprice" else BidsHistory.adjustment_rate
+    )
+    q = select(column).where(column.is_not(None))
     if project_type:
         q = q.join(BidLicenseType, BidsHistory.project_id == BidLicenseType.project_id).where(BidLicenseType.type_name == project_type)
 

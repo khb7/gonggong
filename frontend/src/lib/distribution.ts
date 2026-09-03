@@ -198,6 +198,38 @@ export function computeOffsetBand(
  * rateSigma 를 주면 사정률 근사 오차를 ±1σ 밴드로 함께 계산한다
  * (computeOffsetBand 주석 참고). 0 이면 밴드는 null 이다.
  */
+/** A값이 예정가격(≈기초금액) 이상이면 이상값 — 0 으로 무시한다. */
+function normalizeAValue(aValue: number, basePrice: number): number {
+  return aValue > 0 && aValue < basePrice ? aValue : 0;
+}
+
+/**
+ * 내 투찰가의 offset (%). 분포 x축과 같은 축 위에 놓는다.
+ *
+ *     offset ≈ (투찰금액 − A) / (기초금액 − A) − 법정하한율
+ *
+ * **A값을 빼지 않으면 A값 크기만큼 오른쪽으로 밀린다.** 기초금액 8억 / A값 3천만이면
+ * +0.5%p 어긋나는데, bin 해상도가 0.1% 라 5칸이나 밀린 자리에 표시된다.
+ *
+ * 화면 두 곳(입력창 옆 배지, 「내 offset」 카드)이 같은 값을 써야 하므로
+ * 여기 한 곳에서만 계산한다. 예전에 배지 쪽이 A값 없이 따로 계산해
+ * 같은 화면에 offset 이 두 개(+0.5% vs 0.0%) 뜬 적이 있다.
+ *
+ * `computeLocalPosition()` 과 달리 표시 범위 밖이어도 값을 돌려준다 —
+ * 범위를 벗어났다는 사실 자체를 사용자에게 알려야 하기 때문이다.
+ */
+export function computeMyOffsetPct(
+  myBidPrice: number,
+  basePrice: number,
+  lowerLimitRate: number,
+  aValue: number = 0,
+): number | null {
+  if (!(myBidPrice > 0) || !(basePrice > 0)) return null;
+  const a = normalizeAValue(aValue, basePrice);
+  const adjustedRate = (myBidPrice - a) / (basePrice - a);
+  return Math.round((adjustedRate - lowerLimitRate) * 1000) / 10;
+}
+
 export function computeLocalPosition(
   myBidPrice: number,
   basePrice: number,
@@ -208,11 +240,9 @@ export function computeLocalPosition(
 ): LocalPosition | null {
   if (!bins.length || myBidPrice <= 0 || basePrice <= 0) return null;
 
-  // A값이 예정가격(≈기초금액) 이상이면 이상값 — 무시하고 A값 없이 계산한다
-  const a = aValue > 0 && aValue < basePrice ? aValue : 0;
-
-  const adjustedRate = (myBidPrice - a) / (basePrice - a);
-  const myOffsetPct = Math.round((adjustedRate - lowerLimitRate) * 1000) / 10;
+  const a = normalizeAValue(aValue, basePrice);
+  const myOffsetPct = computeMyOffsetPct(myBidPrice, basePrice, lowerLimitRate, aValue);
+  if (myOffsetPct === null) return null;
   const key = toKey(myOffsetPct);
 
   const matching = bins.find((b) => toKey(b.offset_pct) === key);
@@ -434,12 +464,6 @@ export function describeScope(dq: DistributionQuality): ScopeBadge {
         tone: "broad",
         hint: `발주처 표본이 부족해 지역 단위로 넓혔습니다 (공고 ${notices}건).`,
       };
-    case "type_bucket":
-      return {
-        text: `${dq.distribution_label} 공종 기준`,
-        tone: "broad",
-        hint: `발주처·지역 표본이 부족해 공종·금액구간으로 넓혔습니다 (공고 ${notices}건).`,
-      };
     default:
       return {
         text: "전체 기준",
@@ -455,4 +479,103 @@ export function describeScope(dq: DistributionQuality): ScopeBadge {
  */
 export function winRateIsBroader(dq: DistributionQuality): boolean {
   return dq.distribution_level !== dq.win_rate_level;
+}
+
+// ── 추천 투찰가 ─────────────────────────────────────────────────────────
+
+/**
+ * 후보가 되기 위한 최소 낙찰 표본.
+ *
+ * 낙찰 빈도는 wins/count 라 count 가 작을수록 튄다. 참여 3건 중 1건이 낙찰된
+ * 꼬리 bin 은 33% 로 계산되어 어떤 정상 bin 보다도 높게 나온다. count 에 하한을
+ * 거는 대신 **낙찰 건수**에 거는 이유는, bin 의 count 가 필터된 표본이고
+ * 낙찰은 전체 표본이라 둘의 분모가 다르기 때문이다 (winRateIsBroader 참고).
+ */
+const MIN_WIN_SAMPLE = 5;
+
+export interface BestBin {
+  /** 추천 offset (%) */
+  offset_pct: number;
+  /** offset 을 환산한 투찰가 (원) */
+  estimated_price: number;
+  /** 해당 구간 과거 낙찰 빈도 (%) */
+  historical_win_rate: number;
+  /** 해당 구간 낙찰 건수 */
+  win_count: number;
+  /** 낙찰 빈도 계산에 쓰인 참여 건수 (전체 표본 기준, 역산값) */
+  sample_count: number;
+  /** 전체 평균 낙찰 빈도 대비 배수. 계산 불가면 null */
+  multiple: number | null;
+}
+
+/**
+ * 과거 낙찰 빈도가 가장 높았던 구간을 찾아 투찰가로 환산한다.
+ *
+ * **예측이 아니다.** 사정률은 복수예비가격 구조가 만드는 난수라 예측 대상이
+ * 아니고(md/design/2026-05-29-distribution-engine-analysis.md), 이 값은 과거
+ * 분포에서 가장 유리했던 자리를 금액으로 바꿔 놓은 것일 뿐이다. 개찰 전까지
+ * 예정가격이 ±2~3% 흔들리므로 호출부는 그 사실을 함께 보여야 한다.
+ *
+ * 낙찰 **건수**(win_count)가 아니라 **빈도**(historical_win_rate)로 고르는 이유:
+ * 낙찰이 많이 나온 구간은 대개 참여자가 많이 몰린 구간이라, 건수로 고르면
+ * "남들 많이 가는 자리"를 되돌려줄 뿐 알파가 없다. 참여 대비 비율로 재야
+ * "남들 대비 내가 이길 자리"가 된다.
+ *
+ * @param bins prepareDistribution() 결과 (꼬리 클램프가 끝난 표시 범위)
+ * @param basePrice 기초금액 (원)
+ * @param lowerLimitRate 법정 낙찰하한율 (실효 하한율이 아니다)
+ * @param aValue A값 (원)
+ * @returns 후보가 없으면 null — 억지로 숫자를 만들지 않는다
+ */
+export function findBestWinRateBin(
+  bins: OffsetBucket[],
+  basePrice: number,
+  lowerLimitRate: number,
+  aValue: number = 0,
+): BestBin | null {
+  if (!bins.length || !(basePrice > 0)) return null;
+
+  const rated = bins.filter(
+    (b) => b.historical_win_rate !== null && b.historical_win_rate > 0,
+  );
+
+  // 전체 평균 낙찰 빈도. bin 의 count 는 필터된 표본이라 쓸 수 없으므로,
+  // 낙찰 빈도(전체 표본 기준)에서 분모를 역산해 같은 표본끼리 비교한다.
+  let baseWins = 0;
+  let baseCount = 0;
+  for (const b of rated) {
+    baseWins += b.win_count;
+    baseCount += b.win_count / (b.historical_win_rate! / 100);
+  }
+  const overallRate = baseCount > 0 ? (baseWins / baseCount) * 100 : 0;
+
+  let best: OffsetBucket | null = null;
+  for (const b of rated) {
+    if (b.win_count < MIN_WIN_SAMPLE) continue;
+    if (
+      best === null ||
+      b.historical_win_rate! > best.historical_win_rate! ||
+      // 동률이면 offset 이 높은 쪽 — 같은 확률이면 비싸게 받는 게 낫다
+      (b.historical_win_rate! === best.historical_win_rate! &&
+        b.offset_pct > best.offset_pct)
+    ) {
+      best = b;
+    }
+  }
+  if (best === null) return null;
+
+  const rate = best.historical_win_rate!;
+  const a = normalizeAValue(aValue, basePrice);
+
+  return {
+    offset_pct: best.offset_pct,
+    // offset → 금액 역변환. A값 조정의 역이므로 (예정가격 − A) × rate + A
+    estimated_price: Math.round(
+      (basePrice - a) * (lowerLimitRate + best.offset_pct / 100) + a,
+    ),
+    historical_win_rate: rate,
+    win_count: best.win_count,
+    sample_count: Math.round(best.win_count / (rate / 100)),
+    multiple: overallRate > 0 ? rate / overallRate : null,
+  };
 }

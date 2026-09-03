@@ -23,15 +23,19 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import asyncpg
 import asyncio
 import olefile
 import xlrd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
+from sqlalchemy import select, text
+
+from app.db.models import BidParticipants, BidsHistory
+from app.db.session import AsyncSessionLocal
 from app.engine.a_value import split_limit_rates
 
-DATABASE_URL = "postgresql://postgres@localhost:5432/gonggong"
+# DB 는 앱과 같은 곳을 본다 (settings.DATABASE_URL). 여기서 postgres URL 을
+# 하드코딩하면 적재한 데이터를 엔진이 못 보는 상태가 된다.
 DEFAULT_DIR  = Path("G:/내 드라이브/gonggong/participants")
 
 
@@ -221,23 +225,24 @@ def parse_xls(path: Path) -> dict | None:
 
 # ── DB 적재 ───────────────────────────────────────────────────────────────────
 
-INSERT_SQL = """
+# 이름 있는 바인드 파라미터를 쓴다 — sqlite/postgres 양쪽에서 같은 SQL 이 돈다.
+INSERT_SQL = text("""
 INSERT INTO bid_participants
     (project_id, rank, bid_amount, bid_rate, base_rate, vs_lower_limit, is_winner)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+VALUES (:project_id, :rank, :bid_amount, :bid_rate, :base_rate, :vs_lower_limit, :is_winner)
 ON CONFLICT (project_id, rank) DO NOTHING
-"""
+""")
 
 
-UPDATE_LIMITS_SQL = """
+UPDATE_LIMITS_SQL = text("""
 UPDATE bids_history SET
-    legal_limit_rate     = $2,
-    effective_limit_rate = $3,
-    lower_limit_rate     = COALESCE($2, lower_limit_rate),
-    a_value              = $4::bigint,
-    has_a_value          = ($4::bigint > 0)
-WHERE project_id = $1
-"""
+    legal_limit_rate     = :legal,
+    effective_limit_rate = :effective,
+    lower_limit_rate     = COALESCE(:legal, lower_limit_rate),
+    a_value              = :a_value,
+    has_a_value          = (:a_value > 0)
+WHERE project_id = :project_id
+""")
 
 
 def resolve_limits(notice: dict) -> tuple[Decimal | None, Decimal | None, int] | None:
@@ -255,13 +260,12 @@ def resolve_limits(notice: dict) -> tuple[Decimal | None, Decimal | None, int] |
     return split_limit_rates(est, llh, declared)
 
 
-async def update_notice_limits(conn, dry_run: bool, pending: list[tuple[str, dict]]) -> None:
+async def update_notice_limits(session, dry_run: bool, pending: list[tuple[str, dict]]) -> None:
     """파싱한 공고 헤더로 bids_history 하한율 계열 컬럼을 갱신한다."""
     known = set()
-    if conn is not None:
-        known = {
-            r[0] for r in await conn.fetch("SELECT project_id FROM bids_history")
-        }
+    if session is not None:
+        result = await session.execute(select(BidsHistory.project_id))
+        known = {r[0] for r in result.all()}
 
     updated = skipped = unresolved = mismatch = 0
     rows = []
@@ -279,11 +283,11 @@ async def update_notice_limits(conn, dry_run: bool, pending: list[tuple[str, dic
             mismatch += 1
             print(f"  A값 불일치  {pid}: 선언={declared_a:,} 역산={a_val:,}")
 
-        if conn is not None and pid not in known:
+        if session is not None and pid not in known:
             skipped += 1
             continue
 
-        rows.append((pid, legal, eff, a_val))
+        rows.append({"project_id": pid, "legal": legal, "effective": eff, "a_value": a_val})
         updated += 1
 
     print()
@@ -292,93 +296,109 @@ async def update_notice_limits(conn, dry_run: bool, pending: list[tuple[str, dic
         f"/ bids_history에 없음={skipped} / A값 불일치={mismatch}"
     )
 
-    if dry_run or conn is None:
+    if dry_run or session is None:
         print("  DRY-RUN — DB 갱신 안 함")
-        for pid, legal, eff, a_val in rows[:5]:
-            print(f"    {pid}: 법정={legal} 실효={eff} A={a_val:,}")
+        for r in rows[:5]:
+            print(f"    {r['project_id']}: 법정={r['legal']} 실효={r['effective']} A={r['a_value']:,}")
         return
 
-    await conn.executemany(UPDATE_LIMITS_SQL, rows)
+    if rows:
+        await session.execute(UPDATE_LIMITS_SQL, rows)
+        await session.commit()
     print(f"  {len(rows)}건 갱신 완료")
 
 
 async def run(xls_dir: Path, dry_run: bool, update_limits: bool = False) -> None:
+    """앱과 같은 DB(settings.DATABASE_URL)에 적재한다."""
     files = sorted(xls_dir.glob("*.xls"))
     print(f"XLS 파일: {len(files)}개")
 
-    conn = None
-    existing: set[str] = set()
-
-    if not dry_run:
-        conn = await asyncpg.connect(DATABASE_URL)
-        existing = set(
-            r[0] for r in await conn.fetch("SELECT DISTINCT project_id FROM bid_participants")
-        )
-        print(f"이미 적재된 project_id: {len(existing)}개")
-    else:
+    if dry_run:
         print("DRY-RUN 모드 (DB 저장 없음)")
+        ok, skip, fail, notices = await _scan(files, existing=set(), session=None)
+        _report(ok, skip, fail)
+        if update_limits:
+            await update_notice_limits(None, True, notices)
+        return
 
-    ok = skip = fail = 0
-    notices: list[tuple[str, dict]] = []
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(BidParticipants.project_id).distinct())
+        existing = {r[0] for r in result.all()}
+        print(f"이미 적재된 project_id: {len(existing)}개")
 
-    try:
-        for i, f in enumerate(files, 1):
-            data = parse_xls(f)
+        ok, skip, fail, notices = await _scan(files, existing, session)
+        _report(ok, skip, fail)
 
-            if data is None:
-                fail += 1
-                if fail <= 10 or fail % 50 == 0:
-                    print(f"[{i}/{len(files)}] FAIL  {f.name}")
-                continue
+        if update_limits:
+            await update_notice_limits(session, False, notices)
 
-            pid = data["project_id"]
-            n   = len(data["participants"])
 
-            # 참여자가 이미 적재됐어도 공고 하한율은 갱신 대상이다.
-            notices.append((pid, data["notice"]))
-
-            if pid in existing:
-                skip += 1
-                continue
-
-            if dry_run:
-                fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
-                print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
-                ok += 1
-            else:
-                rows = [
-                    (pid, p["rank"], p["bid_amount"], p["bid_rate"],
-                     p["base_rate"], p["vs_lower_limit"], p["is_winner"])
-                    for p in data["participants"]
-                ]
-                try:
-                    await conn.executemany(INSERT_SQL, rows)
-                except Exception as e:
-                    print(f"[{i}/{len(files)}] DB ERR  {pid}: {e}")
-                    fail += 1
-                    continue
-                existing.add(pid)
-                ok += 1
-                if ok <= 20 or ok % 50 == 0:
-                    fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
-                    print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
-
-    finally:
-        if conn:
-            await conn.close()
-
+def _report(ok: int, skip: int, fail: int) -> None:
     print(f"\n완료: 성공={ok}, 스킵={skip}, 실패={fail}")
     print(f"bid_participants 총 적재: {ok}개 공고")
 
-    if update_limits:
-        conn2 = None
+
+async def _scan(files, existing: set[str], session) -> tuple[int, int, int, list[tuple[str, dict]]]:
+    """파일을 훑어 참여자를 적재하고 (성공, 스킵, 실패, 공고헤더 목록)을 돌려준다.
+
+    session=None 이면 파싱만 한다 (dry-run).
+    """
+    ok = skip = fail = 0
+    notices: list[tuple[str, dict]] = []
+
+    for i, f in enumerate(files, 1):
+        data = parse_xls(f)
+
+        if data is None:
+            fail += 1
+            if fail <= 10 or fail % 50 == 0:
+                print(f"[{i}/{len(files)}] FAIL  {f.name}")
+            continue
+
+        pid = data["project_id"]
+        n   = len(data["participants"])
+
+        # 참여자가 이미 적재됐어도 공고 하한율은 갱신 대상이다.
+        notices.append((pid, data["notice"]))
+
+        if pid in existing:
+            skip += 1
+            continue
+
+        fmt = "7열" if data["participants"][0]["bid_rate"] is None else "12열"
+
+        if session is None:
+            print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
+            ok += 1
+            continue
+
+        rows = [
+            {
+                "project_id":     pid,
+                "rank":           p["rank"],
+                "bid_amount":     p["bid_amount"],
+                "bid_rate":       p["bid_rate"],
+                "base_rate":      p["base_rate"],
+                "vs_lower_limit": p["vs_lower_limit"],
+                "is_winner":      p["is_winner"],
+            }
+            for p in data["participants"]
+        ]
         try:
-            if not dry_run:
-                conn2 = await asyncpg.connect(DATABASE_URL)
-            await update_notice_limits(conn2, dry_run, notices)
-        finally:
-            if conn2:
-                await conn2.close()
+            await session.execute(INSERT_SQL, rows)
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            print(f"[{i}/{len(files)}] DB ERR  {pid}: {e}")
+            fail += 1
+            continue
+
+        existing.add(pid)
+        ok += 1
+        if ok <= 20 or ok % 50 == 0:
+            print(f"[{i}/{len(files)}] OK {fmt}  {pid}  {n}명")
+
+    return ok, skip, fail, notices
 
 
 def main():

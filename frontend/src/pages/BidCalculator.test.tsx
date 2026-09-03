@@ -43,53 +43,43 @@ async function calculate() {
     target: { value: "R25BK00678040" },
   });
   fireEvent.click(screen.getByRole("button", { name: "계산하기" }));
-  await waitFor(() => expect(screen.getByText(/예측 사정률:/)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/적용 사정률:/)).toBeInTheDocument());
 }
 
 describe("BidCalculator", () => {
   beforeEach(() => vi.mocked(calculateBid).mockReset());
 
-  it("이력이 있으면 사정률과 예측 구간·신뢰도를 함께 보여준다", async () => {
+  it("사정률을 고정값으로 제시하고 예측이 아님을 명시한다", async () => {
     vi.mocked(calculateBid).mockResolvedValue(makeResult());
     render(<BidCalculator />);
     await calculate();
 
-    expect(screen.getByText("99.87%")).toBeInTheDocument();
-    expect(screen.getByText("(99.68% ~ 100.06%)")).toBeInTheDocument();
-    expect(screen.getByText("신뢰도 높음")).toBeInTheDocument();
-    expect(screen.getByText(/추첨으로 정해집니다/)).toBeInTheDocument();
+    // 산식 안내줄에도 같은 숫자가 찍히므로 개수로 확인한다
+    expect(screen.getAllByText("99.87%").length).toBeGreaterThan(0);
+    expect(screen.getByText("고정값 · 예측 아님")).toBeInTheDocument();
+    expect(screen.getByText("99.68% ~ 100.06%")).toBeInTheDocument();
+    expect(screen.getByText(/맞히는 값이 아니다/)).toBeInTheDocument();
   });
 
-  it("이력이 없으면 1.0 을 숫자로 찍지 않고 데이터 부족이라고 말한다", async () => {
-    vi.mocked(calculateBid).mockResolvedValue(
-      makeResult({
-        fallback_level: "default",
-        predicted_rate: 1.0,
-        prediction_range: [0.998, 1.002],
-        confidence_grade: "low",
-      }),
-    );
-    render(<BidCalculator />);
-    await calculate();
+  it("fallback_level 과 무관하게 같은 화면을 그린다", async () => {
+    // 사정률 예측을 끈 뒤로 백엔드는 항상 "fixed" 를 돌려준다.
+    // 예전엔 fallback_level 에 따라 "데이터 부족" / 신뢰도 배지를 갈랐는데,
+    // 그게 "근거: 데이터 없음" 으로 찍혀 오해를 불렀다.
+    for (const level of ["fixed", "default", "none"]) {
+      vi.mocked(calculateBid).mockResolvedValue(
+        makeResult({ fallback_level: level, predicted_rate: 1.0015 }),
+      );
+      const { unmount } = render(<BidCalculator />);
+      await calculate();
 
-    expect(screen.getByText("데이터 부족")).toBeInTheDocument();
-    // 기준값이 정밀한 예측처럼 보이면 안 된다
-    expect(screen.queryByText("100.00%")).not.toBeInTheDocument();
-    expect(screen.queryByText(/^신뢰도/)).not.toBeInTheDocument();
-    expect(screen.getByText(/예측이 아니라 하한율 기준 계산값/)).toBeInTheDocument();
+      expect(screen.getAllByText("100.15%").length).toBeGreaterThan(0);
+      expect(screen.queryByText("데이터 부족")).not.toBeInTheDocument();
+      expect(screen.queryByText(/^신뢰도/)).not.toBeInTheDocument();
+      unmount();
+    }
   });
 
-  it("fallback_level 이 none 이어도 같게 처리한다", async () => {
-    vi.mocked(calculateBid).mockResolvedValue(
-      makeResult({ fallback_level: "none", predicted_rate: 1.0 }),
-    );
-    render(<BidCalculator />);
-    await calculate();
-
-    expect(screen.getByText("데이터 부족")).toBeInTheDocument();
-  });
-
-  it("투찰가 3개와 끝자리 회피·A값 표시를 그린다", async () => {
+  it("투찰가와 끝자리 회피·A값 표시를 그린다", async () => {
     vi.mocked(calculateBid).mockResolvedValue(makeResult());
     render(<BidCalculator />);
     await calculate();

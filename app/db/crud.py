@@ -55,11 +55,16 @@ async def get_collected_dates(
     end_date: date,
 ) -> set[date]:
     """start_date~end_date 범위 중 이미 수집된 날짜 집합 반환."""
+    # func.distinct() 로 감싸면 SQLAlchemy 가 컬럼 타입 변환을 건너뛰어
+    # SQLite 에서 date 가 아니라 문자열이 돌아온다. 그러면 호출부의
+    # `chunk_days.issubset(collected)` 가 영영 False 가 되어 스킵이 죽는다.
     result = await db.execute(
-        select(func.distinct(BidsHistory.bid_date)).where(
+        select(BidsHistory.bid_date)
+        .where(
             BidsHistory.bid_date >= start_date,
             BidsHistory.bid_date <= end_date,
         )
+        .distinct()
     )
     return {row[0] for row in result.fetchall()}
 
@@ -88,7 +93,6 @@ async def get_rates_by_client(
         BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
-        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
@@ -119,7 +123,6 @@ async def get_rates_by_region(
         BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
-        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
@@ -146,7 +149,6 @@ async def get_rates_by_type_and_bucket(
         BidLicenseType.type_name == project_type,
         _bucket_filter(bucket_id),
         _bid_type_filter(bid_type),
-        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
@@ -171,7 +173,6 @@ async def get_all_rates(
     conditions = [
         BidLicenseType.type_name == project_type,
         _bid_type_filter(bid_type),
-        _price_method_filter(),
     ]
     if before_date is not None:
         conditions.append(BidsHistory.bid_date < before_date)
@@ -182,3 +183,31 @@ async def get_all_rates(
         .where(*conditions)
     )
     return [row[0] for row in result.fetchall()]
+
+
+async def get_participant_collected_dates(
+    db: AsyncSession,
+    start_date: date,
+    end_date: date,
+) -> set[date]:
+    """start_date~end_date 중 참여자 데이터까지 들어온 날짜 집합을 반환한다.
+
+    get_collected_dates() 와 달리 bid_participants 존재 여부를 본다.
+    info21c 수집의 목적물이 개별 투찰가이므로, 공고만 있고 참여자가 비어 있는
+    날은 아직 수집되지 않은 것으로 취급해야 한다.
+    """
+    from app.db.models import BidParticipants
+
+    # func.distinct() 로 감싸면 SQLAlchemy 가 컬럼 타입 변환을 건너뛰어
+    # SQLite 에서 date 가 아니라 문자열이 돌아온다. 컬럼을 그대로 select 하고
+    # .distinct() 를 걸어야 date 로 받는다.
+    result = await db.execute(
+        select(BidsHistory.bid_date)
+        .join(BidParticipants, BidParticipants.project_id == BidsHistory.project_id)
+        .where(
+            BidsHistory.bid_date >= start_date,
+            BidsHistory.bid_date <= end_date,
+        )
+        .distinct()
+    )
+    return {row[0] for row in result.fetchall()}

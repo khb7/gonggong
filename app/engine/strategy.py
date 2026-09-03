@@ -28,31 +28,41 @@ def select_strategy(participants: int) -> str:
 
 def select_center_offset(strategy: str, mad_val: Decimal) -> Decimal:
     """
-    전략에 따른 중심 Offset 값을 반환한다.
-
-    - safe       → +MAD
-    - normal     →  0
-    - aggressive → +MAD
+    중심 Offset 값. **전략과 무관하게 항상 0 이다.**
 
     offset 은 `combined_rate = 낙찰하한율 + offset` 으로 쓰인다.
-    따라서 **음수 offset 은 낙찰하한가 아래 투찰을 뜻하고, 그건 곧 실격이다.**
-    설계 초안(공공입찰.md 7절)의 "aggressive = -MAD (하단 공격 투찰)" 은
-    이 제약을 반영하지 못한 값이라 +MAD 로 정정됐다.
+    0 은 "가정한 사정률에서의 낙찰하한가에 정확히 붙인다" 는 뜻이다.
 
-    그 결과 현재 safe 와 aggressive 는 같은 값을 돌려준다. 하한선 위로
-    얼마나 띄울지에 대한 전략 차이는 아직 정해지지 않았다.
-    (`select_strategy()` 도 항상 "aggressive" 를 반환하므로 실사용 경로는 하나뿐이다.)
-    실제 타점 선택은 분포 기반 화면(`/bid/distribution`)으로 옮겨가는 중이다.
+    ## 왜 0 인가
+
+    예전에는 safe/aggressive 가 `+MAD`(0.486%p)를 돌려줬다. 하한가보다 그만큼
+    위에 투찰하면 유효하기는 하지만 **이길 자리가 아니다.** 실측(12,010 공고)에서
+    낙찰자는 낙찰하한가 위 **+0.016%**(중앙값)에 붙어 있다. 0.486%p 는 그보다
+    30 배 멀다.
+
+    ## 위험 조절은 offset 이 아니라 사정률로 한다
+
+    투찰가는 두 단계로 정해진다:
+
+        예정가격 = 기초금액 × 사정률(c)          ← 여기가 불확실. 제도가 만드는 난수
+        투찰가   = (예정가격 − A) × (r + offset) + A
+
+    유효/무효를 가르는 건 c 다 — `c ≥ 실제사정률` 이라야 유효하다.
+    offset 을 올려 안전을 사려 하면 c 를 올리는 것과 효과가 겹치면서
+    낙찰선에서만 멀어진다. 그래서 조절 손잡이를 c 하나로 모았다
+    (`app/api/v1/bidding.py::FIXED_PREPRICE_RATE`, 자사 151건 스윕 최적 100.15%).
+
+    `select_strategy()` 가 항상 "aggressive" 를 반환하므로 실사용 경로는
+    어차피 하나뿐이다. 인자는 호출부 호환을 위해 남긴다.
+    타점 선택 자체는 분포 화면(`/bid/distribution`)이 담당한다.
 
     Args:
-        strategy: 전략명 ("safe" | "normal" | "aggressive")
-        mad_val: MAD 값 (Decimal)
+        strategy: 전략명. 현재 결과에 영향을 주지 않는다.
+        mad_val: MAD 값. 현재 결과에 영향을 주지 않는다.
 
     Returns:
-        중심 Offset (Decimal). 하한 미달을 막기 위해 항상 0 이상.
+        Decimal("0")
     """
-    if strategy in ("safe", "aggressive"):
-        return mad_val
     return Decimal("0")
 
 

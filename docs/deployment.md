@@ -1,14 +1,21 @@
 # 배포 및 서버 확인 가이드
 
-*마지막 실측: 2026-08-24 (SSH 로 직접 확인)*
+*마지막 실측: 2026-08-25*
 
 오라클 클라우드 VM(Ubuntu 22.04) 한 대에서 FastAPI 백엔드가 systemd 서비스로 돌아간다.
 `app/main.py` 가 `frontend/dist` 를 정적 서빙하므로 프로세스는 uvicorn 하나뿐이다.
 
-> **중요: 서비스는 인터넷에 직접 노출돼 있지 않다.**
-> uvicorn 은 `127.0.0.1:8000` 에만 바인딩되고 방화벽이 8000 을 막는다.
-> 같은 서버의 nginx 는 별개 프로젝트(`fp-desk.com`)용이며 **gonggong 으로 가는 프록시 블록은 없다.**
-> 따라서 확인하려면 **SSH 터널**을 써야 한다. `http://140.245.76.153:8000` 은 열리지 않는다.
+공개 주소는 **https://bid.fp-desk.com** 이고, 경로는 이렇게 이어진다.
+
+```
+브라우저 → Cloudflare(프록시) → nginx(443) → 127.0.0.1:8000 uvicorn
+```
+
+uvicorn 은 `127.0.0.1:8000` 에만 바인딩되고 방화벽이 8000 을 막는다.
+방화벽은 80/443 도 **Cloudflare 대역에서 오는 요청만** 허용하므로(`~/harden-origin.sh` 의 `CLOUDFLARE` 체인),
+DNS 레코드의 프록시(주황 구름)를 끄면 사이트가 통째로 닫힌다.
+
+서버 내부를 직접 볼 때는 여전히 SSH 터널을 쓴다(3절).
 
 ---
 
@@ -16,11 +23,15 @@
 
 | 항목 | 값 |
 |------|-----|
+| 공개 주소 | `https://bid.fp-desk.com` (Cloudflare 프록시 → nginx → uvicorn) |
 | 서버 | `ubuntu@140.245.76.153` (Ubuntu 22.04, OpenSSH 8.9) |
+| **사양** | **OCI `VM.Standard.E2.1.Micro` — 1 OCPU / RAM 1GB.** 이 사양이 설계 제약이다. 10절 참고 |
 | SSH 키 | `C:\Users\onebe\gonggong\ssh-key-2026-04-12.key` (실제 내용은 ed25519 `onebe-oci-20260722`, `~/.ssh/oci_key` 와 동일 파일) |
 | 코드 경로 | `~/gonggong` |
 | 서비스 | `gonggong.service` (systemd) |
-| 바인딩 | `127.0.0.1:8000` — 외부 접근 불가 |
+| 바인딩 | `127.0.0.1:8000` — 외부 직접 접근 불가, nginx 프록시 경유 |
+| nginx 설정 | `/etc/nginx/sites-available/gonggong` |
+| 인증서 | `bid.fp-desk.com` (certbot webroot, 만료 2026-11-23) |
 | DB | SQLite — `~/gonggong/data/gonggong.db` |
 | git remote | `https://github.com/khb7/gonggong.git` |
 | sudo | 비밀번호 없이 사용 가능 (`sudo -n` 통과) |
@@ -38,7 +49,11 @@ ssh -i "C:\Users\onebe\gonggong\ssh-key-2026-04-12.key" -o StrictHostKeyChecking
 
 ---
 
-## 2. 브라우저로 확인하기 (SSH 터널)
+## 2. 브라우저로 확인하기
+
+공개 주소로 그냥 열면 된다 — https://bid.fp-desk.com
+
+서버 내부를 직접 봐야 할 때(nginx 를 건너뛰고 오리진만 확인)는 SSH 터널을 쓴다.
 
 ```bash
 # 로컬에서 터널 열기 (백그라운드)
@@ -89,6 +104,32 @@ git stash -- data/gonggong.db    # 서버 DB 가 운영 데이터 — pull 전 �
 git pull origin main
 ```
 
+#### `git pull` 이 인증에 막힐 때 (2026-08-28 실제로 막혔다)
+
+서버에 GitHub 자격증명이 없다 — `could not read Username for 'https://github.com'`.
+계정 설정(배포 키 발급)을 건드리지 않고 **git bundle** 로 넘기면 히스토리가 온전히 유지된다.
+
+```bash
+# 로컬 — 15MB 정도다
+git bundle create /tmp/gg.bundle main
+scp -i "C:\Users\onebe\gonggong\ssh-key-2026-04-12.key" /tmp/gg.bundle \
+    ubuntu@140.245.76.153:/tmp/gg.bundle
+```
+
+```bash
+# 서버
+cd ~/gonggong && git pull --ff-only /tmp/gg.bundle main
+```
+
+`data/gonggong.db` 가 옛 커밋에 추적돼 있어 충돌하면, DB 를 잠시 밀어두고 pull 한 뒤
+되돌린다. **`git stash` 를 쓰면 안 된다** — 새 DB 가 스태시로 들어가고 옛 버전이 복원된다.
+
+```bash
+mv ~/gonggong/data/gonggong.db /tmp/keep.db
+cd ~/gonggong && git checkout -- data/gonggong.db && git pull --ff-only /tmp/gg.bundle main
+mv /tmp/keep.db ~/gonggong/data/gonggong.db && chmod 664 ~/gonggong/data/gonggong.db
+```
+
 `git stash pop` 은 하지 않는다. 로컬 DB 변경분은 버려도 되는 값이다.
 서버에 `app/main.py` 등 손으로 고친 파일이 남아 있을 수 있으니 pull 전 `git status` 로 확인할 것.
 
@@ -108,7 +149,53 @@ scp -i "C:\Users\onebe\gonggong\ssh-key-2026-04-12.key" -r dist/ \
     ubuntu@140.245.76.153:~/gonggong/frontend/
 ```
 
-### 4-3. 재시작
+### 4-3. 데이터(DB) 배포 — **사전계산을 먼저 돌린다**
+
+DB 는 git 으로 가지 않는다. 로컬에서 만들어 파일째 보낸다.
+
+> ⚠ **`scripts/build_offset_histogram.py` 를 로컬에서 먼저 돌려야 한다.**
+> ETL 로 데이터를 갱신했으면 사전계산도 다시 만들어야 하고, 그걸 빼먹으면
+> 서버가 참여자 4.6M 행을 실시간 스캔한다. 2026-08-28 에 그렇게 서버가 멈췄다(10절).
+> **서버에서 돌리면 안 된다** — 애초에 피하려던 그 스캔을 그대로 하게 된다.
+
+```bash
+# 1. 로컬 — 적재 후 반드시 이 순서
+python scripts/etl_csv.py --file <각 파일> --upsert
+python scripts/build_offset_histogram.py          # 159 스코프 / 약 25,000 bin / 50초
+python scripts/validate_data.py                   # FAIL 0 확인
+```
+
+```bash
+# 2. 압축해서 전송 (703MB → 205MB)
+gzip -c data/gonggong.db > /tmp/gg.db.gz
+scp -i "C:\Users\onebe\gonggong\ssh-key-2026-04-12.key" /tmp/gg.db.gz \
+    ubuntu@140.245.76.153:/tmp/gg.db.gz
+```
+
+```bash
+# 3. 서버 — 교체 **전에** 무결성과 내용을 확인한다
+gunzip -f /tmp/gg.db.gz
+python3 -c "
+import sqlite3; c=sqlite3.connect('/tmp/gg.db')
+print(c.execute('PRAGMA quick_check').fetchone()[0])
+for t in ('bids_history','bid_participants','offset_histogram','offset_scope_stat'):
+    print(t, c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0])
+"
+```
+
+```bash
+# 4. 교체 — rm 쓰지 말고 mv 로. 롤백이 mv 한 번이 된다
+sudo systemctl stop gonggong
+mv ~/gonggong/data/gonggong.db ~/gonggong/data/gonggong.db.$(date +%Y%m%d)
+mv /tmp/gg.db ~/gonggong/data/gonggong.db
+chmod 664 ~/gonggong/data/gonggong.db
+sudo systemctl start gonggong
+```
+
+마이그레이션은 보통 필요 없다 — 로컬에서 이미 적용된 DB 를 통째로 보내기 때문이다.
+`python3 -m alembic current` 가 head 인지만 확인한다.
+
+### 4-4. 재시작
 
 ```bash
 sudo systemctl restart gonggong
@@ -154,3 +241,131 @@ ReadWritePaths=/home/ubuntu/gonggong
 uvicorn app.main:app --reload          # 백엔드 :8000
 cd frontend && npm run dev             # 프론트 :5173 (CORS 허용됨)
 ```
+
+---
+
+## 8. 도메인 / HTTPS 구성 (2026-08-25 구축)
+
+`bid.fp-desk.com` 은 fp-desk.com 존의 서브도메인이다. Cloudflare DNS 에 A 레코드
+`bid → 140.245.76.153` 을 **Proxied(주황 구름)** 로 두었다. 회색 구름으로 바꾸면
+방화벽이 Cloudflare 대역만 허용하므로 사이트가 닫힌다.
+
+nginx 설정 사본: `deploy/nginx/bid.fp-desk.com.conf`
+(서버 실제 경로는 `/etc/nginx/sites-available/gonggong`, `sites-enabled` 에 심볼릭 링크)
+
+인증서는 fp-desk 와 같은 certbot webroot 방식으로 받았다.
+
+```bash
+sudo certbot certonly --webroot -w /var/www/certbot -d bid.fp-desk.com
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+클라이언트 실 IP 복원은 `/etc/nginx/conf.d/cloudflare-realip.conf` 가 전역 처리하므로
+사이트 설정에 다시 적지 않는다.
+
+### 새 서브도메인을 붙일 때 순서
+
+인증서를 먼저 받으려 하면 실패한다. 80 블록 → certbot → 443 블록 순서를 지킨다.
+
+1. Cloudflare DNS 에 A 레코드 추가 (Proxied)
+2. nginx 에 80 블록만 올리고 reload — `/.well-known/acme-challenge/` → `/var/www/certbot`
+3. certbot 발급
+4. 443 블록 추가 후 `nginx -t` → reload
+
+---
+
+## 9. 일별 데이터 수집 (로컬 PC)
+
+info21c 는 Playwright 로 브라우저를 띄워 로그인하고 Excel 을 받는다. 서버는
+RAM 이 부족하고(956MB 중 여유 472MB) info21c 가 동시 접속을 막으므로,
+**수집은 로컬 PC 에서 돌리고 결과 DB 만 서버로 올린다.**
+
+### 수동 실행
+
+```bash
+python scripts/daily_collect.py                     # 최근 30일 중 빈 날짜
+python scripts/daily_collect.py --days 90           # 최근 90일
+python scripts/daily_collect.py --start 20251224 --end 20260131
+```
+
+아직 참여자 데이터가 없는 날짜만 골라 받으므로, 여러 번 돌려도 중복 수집되지 않는다.
+
+### 작업 스케줄러 등록
+
+PC 를 매일 켜지 않아도 되도록 "놓친 작업 따라잡기"를 쓴다.
+
+1. `작업 스케줄러` 실행 → **작업 만들기** (기본 작업 아님)
+2. **일반** 탭 — 이름 `gonggong 일별 수집`, "사용자가 로그온할 때만 실행" 유지
+3. **트리거** 탭 — 새로 만들기 → 매일 03:00
+4. **동작** 탭 — 새로 만들기
+   - 프로그램: `python`
+   - 인수: `scripts/daily_collect.py --headless`
+   - 시작 위치: `C:\Users\onebe\gonggong`
+5. **설정** 탭 — **"예약된 시작을 놓친 경우 가능한 한 빨리 작업 시작"** 체크 ← 핵심
+6. 확인
+
+이 옵션 덕분에 PC 가 꺼져 있던 날의 작업은 다음에 켤 때 실행되고,
+그때 빈 날짜를 한꺼번에 메운다.
+
+### 첫 실행 주의
+
+마지막 수집이 **2025-12-24** 라 공백이 길다. 한 번에 돌리면 오래 걸리므로
+첫 회는 기간을 나눠 수동으로 돌린 뒤 스케줄러에 맡긴다.
+
+```bash
+python scripts/daily_collect.py --start 20251224 --end 20260131
+python scripts/daily_collect.py --start 20260201 --end 20260331
+# ... 이어서
+```
+
+---
+
+## 10. 서버 사양 제약 — RAM 1GB
+
+`VM.Standard.E2.1.Micro` 는 **1 OCPU / RAM 1GB** 다. DB 는 703MB 라 페이지 캐시에
+다 못 올라간다. 로컬 성능은 이 서버의 근거가 되지 못한다.
+
+### 2026-08-28 사고
+
+703MB DB 를 올린 뒤 분포 요청이 참여자 **4,490,350 행을 파이썬 리스트로** 끌어오면서
+스래싱 → SSH·HTTP 모두 응답 불가 → VM 강제 재부팅.
+
+로컬은 RAM 이 넉넉해 문제가 안 보였고, 그전 서버 DB 는 참여자가 52 행뿐이라
+한 번도 드러난 적이 없었다.
+
+원인은 두 겹이었고 서버에서 재서 갈랐다.
+
+| | 문제 | 확인 |
+|---|---|---|
+| 메모리 | 4.5M 행을 파이썬으로 집계 | SQL 집계는 RSS **14.6MB** |
+| 속도 | 4.5M 행 스캔 자체 | 필터 없이도 68.8s — 특정 필터 탓이 아니었다 |
+
+수정 후 (같은 서버에서 실측):
+
+```
+global               0.001s   ← 69.1s 였다
+region(경기)          0.001s   ← 22.3s 였다
+client(화성시+조경)     0.347s   (사전계산 없음 — 실시간)
+최대 RSS 13.1 MB     서비스 메모리 157MB
+```
+
+### 지켜야 할 것
+
+1. **행을 파이썬으로 끌어오지 말 것.** 집계는 SQL 에서 한다.
+   `bid_participants` 는 4,656,914 행이다.
+2. **넓은 스코프는 사전계산.** `scripts/build_offset_histogram.py` 를 **로컬에서** 돌린다.
+3. **SQLite `alter_column` 금지.** 테이블 재작성(복사)을 유발한다.
+   `bid_participants` 에 걸면 이 사양에서 위험하다. alembic autogenerate 가
+   무관한 `NOT NULL` 변경을 끼워 넣는 일이 있으니 마이그레이션을 눈으로 확인할 것.
+4. **배포 전 서버에서 재라.** DB 파일만 `/tmp` 에 놓고 쿼리 시간과 RSS 를 측정한 뒤
+   교체한다. 이 한 단계가 사고를 막는다.
+
+### 서버가 스래싱으로 굳었을 때
+
+SSH 가 `Connection timed out during banner exchange` 로 막힌다 — sshd 를 fork 할
+여유조차 없다는 뜻이다. 콘솔의 **Running** 은 전원 상태일 뿐 OS 건강이 아니다.
+
+OCI 콘솔 → Compute → Instances → 인스턴스 → **Reboot** 시 반드시
+**Force reboot**(또는 More actions → Reset)를 쓴다. 일반 Reboot 은 OS 의 정상 종료를
+기다리다 실패한다.

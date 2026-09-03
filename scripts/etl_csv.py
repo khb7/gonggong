@@ -22,6 +22,7 @@ Info21c 클린 CSV → bids_history DB 적재 스크립트.
 import argparse
 import asyncio
 import os
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -32,7 +33,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from app.db.session import AsyncSessionLocal
-from app.db.models import BidsHistory, BidLicenseType
+from app.db.models import BidsHistory, BidLicenseType, BidTag
 from app.db.normalize import parse_license_types
 from app.engine.a_value import has_a_value_tag, split_limit_rates
 
@@ -72,6 +73,21 @@ def _parse_rate(raw) -> Decimal | None:
     if value > 1:
         value = value / Decimal(100)
     return value
+
+# 공고명 대괄호 태그. 예) '... 유지보수공사 [정][실적][공의][A값][순]' → 정/실적/공의/A값/순
+_TAG_RE = re.compile(r"\[([^\]]{1,20})\]")
+
+
+def parse_notice_tags(title: str) -> list[str]:
+    """공고명에서 대괄호 태그를 뽑는다. 중복 제거, 원래 순서 유지."""
+    if not title or pd.isna(title):
+        return []
+    seen: list[str] = []
+    for t in _TAG_RE.findall(str(title)):
+        t = t.strip()
+        if t and t not in seen:
+            seen.append(t)
+    return seen
 
 
 def normalize_region(raw: str) -> str:
@@ -206,9 +222,14 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 err_value += 1
                 continue
 
-            # 사정률: 예산가격(예정가격) / 기초금액
-            adjustment_rate = est_price / base_price
-            if not (0.95 < adjustment_rate < 1.05):
+            # 사정률: 낙찰금액 / 기초금액
+            # 요약 포맷에 1순위기초대비(%) 컬럼이 있으면 우선 사용
+            raw_kd = row.get("1순위기초대비", None)
+            if raw_kd is not None and str(raw_kd).strip() not in ("", "nan"):
+                adjustment_rate = float(str(raw_kd).replace(",", "").strip()) / 100.0
+            else:
+                adjustment_rate = winner_price / base_price
+            if not (0.70 < adjustment_rate < 1.00):
                 err_value += 1
                 continue
 
@@ -255,18 +276,31 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             raw_pm = row.get("예정가격결정방식", "")
             price_method = normalize_price_method(str(raw_pm) if raw_pm else "")
 
-            # ── 1순위사정율: 있으면 직접 사용, 없으면 예산가격/기초금액 ──────
-            raw_sar = row.get("1순위사정율", None)
-            if raw_sar is not None and str(raw_sar).strip() not in ("", "nan"):
-                sar = float(str(raw_sar).replace(",", "").strip())
-                if sar > 1:      # 퍼센트 단위 (예: 99.71) → 소수
-                    sar = sar / 100.0
-                adjustment_rate = sar
-                if not (0.95 < adjustment_rate < 1.05):
-                    err_value += 1
-                    continue
-            # adjustment_rate는 이미 위에서 est_price/base_price로 계산됨
-            # 1순위사정율이 있으면 덮어쓴다
+            # ── 공고명 / 태그 ─────────────────────────────────────────────
+            # 태그는 참여자 수를 크게 가른다: [시담] 평균 1.0개사(경쟁입찰 아님),
+            # [현필] 3.1개사, [관내] 67.8개사, [순] 895.6개사.
+            notice_title = str(notice_name).strip() if notice_name and str(notice_name).strip() != "nan" else None
+            if notice_title and len(notice_title) > 300:
+                notice_title = notice_title[:300]
+            tags = parse_notice_tags(notice_title or "")
+            # has_a_value 는 위에서 이미 정했다 — [A값] 태그 OR 역산된 a_value > 0.
+            # 태그만 보면 태그 없이 A값이 붙은 공고를 놓친다.
+
+            # ── 사정률 (예정가격/기초금액) ─────────────────────────────────
+            # adjustment_rate(=낙찰가/기초금액)와 다른 값이다. 원본 컬럼 우선,
+            # 없으면 예정가격/기초금액으로 계산 (둘 다 원본에 있다).
+            preprice_rate = None
+            raw_pp = row.get("예가/기초(100%)", None)
+            if raw_pp is not None and str(raw_pp).strip() not in ("", "nan"):
+                try:
+                    preprice_rate = float(str(raw_pp).replace(",", "").strip()) / 100.0
+                except ValueError:
+                    preprice_rate = None
+            if preprice_rate is None:
+                preprice_rate = est_price / base_price
+            # 복수예비가격 생성범위는 최대 ±6% 대다. 벗어나면 값이 깨진 행.
+            if not (0.90 < preprice_rate < 1.10):
+                preprice_rate = None
 
             # ── g2b_code ─────────────────────────────────────────────────
             raw_g2b = row.get("g2b분류", None)
@@ -280,6 +314,11 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 "client_id":        str(row.get("수요기관사업자등록번호", "")).strip() or None,
                 "region":           normalize_region(row.get("수요기관지역", "")),
                 "_license_types":   license_types,
+                "_tags":            tags,
+                "notice_title":     notice_title,
+                "preprice_rate":    preprice_rate,
+                "est_price":        est_price,
+                "lower_limit_price": lower_limit_price,
                 "bid_type":         normalize_bid_type(row.get("낙찰방법", "")),
                 "price_method":     price_method,
                 "base_price":       base_price,
@@ -312,6 +351,26 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
             print("")
 
     return df_final
+
+
+async def _sync_tags(session, project_id: str, tags: list[str]) -> None:
+    """공고의 bid_tags 를 주어진 목록과 정확히 일치시킨다.
+
+    추가만 하면 안 된다 — 같은 공고가 정정공고로 여러 파일에 다른 공고명으로
+    들어오면 태그가 누적되어, 최신 공고명에서 계산한 has_a_value 와 어긋난다.
+    """
+    with session.no_autoflush:
+        rows = await session.scalars(
+            select(BidTag).where(BidTag.project_id == project_id)
+        )
+        existing = {r.tag: r for r in rows}
+
+    for tag in tags:
+        if tag not in existing:
+            session.add(BidTag(project_id=project_id, tag=tag))
+    for tag, obj in existing.items():
+        if tag not in tags:
+            await session.delete(obj)
 
 
 async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
@@ -358,6 +417,13 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                     existing.participants     = row["participants"]
                     existing.bid_date         = row["bid_date"]
                     existing.g2b_code         = row["g2b_code"]
+                    existing.notice_title      = row["notice_title"]
+                    existing.preprice_rate     = row["preprice_rate"]
+                    existing.est_price         = row["est_price"]
+                    existing.lower_limit_price = row["lower_limit_price"]
+                    # 태그는 기존 공고에도 넣어야 한다. bid_license_types 와 달리
+                    # 신규 경로만 두면 이미 적재된 공고엔 영원히 안 들어간다.
+                    await _sync_tags(session, pid, row.get("_tags", []))
                     updated += 1
                 else:
                     updated += 1  # skipped count
@@ -381,7 +447,15 @@ async def load_to_db(df: pd.DataFrame, upsert: bool = False) -> tuple[int, int]:
                 participants     = row["participants"],
                 bid_date         = row["bid_date"],
                 g2b_code         = row["g2b_code"],
+                notice_title      = row["notice_title"],
+                preprice_rate     = row["preprice_rate"],
+                est_price         = row["est_price"],
+                lower_limit_price = row["lower_limit_price"],
             ))
+
+            # bid_tags 삽입 (신규 공고)
+            for tag in row.get("_tags", []):
+                session.add(BidTag(project_id=row["project_id"], tag=tag))
 
             # bid_license_types 삽입 (신규 공고만)
             for lt in row.get("_license_types", []):

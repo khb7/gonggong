@@ -49,7 +49,22 @@ def test_has_a_value_tag_false(name):
 
 def test_resolve_legal_rate_snaps_down():
     """실효 하한율 이하의 후보 중 가장 큰 값을 고른다."""
-    assert resolve_legal_limit_rate(Decimal("0.88255")) == Decimal("0.88000")
+    assert resolve_legal_limit_rate(Decimal("0.88255")) == Decimal("0.87745")
+
+
+def test_resolve_legal_rate_does_not_snap_to_service_rate():
+    """공사 공고를 용역 하한율로 오분류하지 않는다.
+
+    후보표를 공사+용역 합집합으로 쓰던 시절, 법정 0.89745 인 공사 공고에
+    A값이 붙으면 실효율이 0.90 을 넘어 용역값 `0.90000` 에 걸렸다.
+    그러면 A값이 21% 과소 산출된다. 공사 표에는 0.89745 위가 없어야 한다.
+    """
+    from app.engine.a_value import LEGAL_LIMIT_RATES_SERVICE
+
+    eff = Decimal("0.90258")  # 법정 0.89745 + A값 5%
+    assert resolve_legal_limit_rate(eff) == Decimal("0.89745")
+    # 용역 표를 명시적으로 넘기면 용역값이 나온다 (분리가 실제로 동작하는지)
+    assert resolve_legal_limit_rate(eff, rates=LEGAL_LIMIT_RATES_SERVICE) == Decimal("0.90000")
 
 
 def test_resolve_legal_rate_exact_match():
@@ -126,9 +141,62 @@ def test_effective_equals_legal_when_no_a_value():
 
 def test_split_limit_rates_with_a_value():
     legal, eff, a = split_limit_rates(328_577_900, 289_985_144, None)
-    assert legal == Decimal("0.88000")
+    assert legal == Decimal("0.87745")
     assert float(eff) == pytest.approx(0.88255, abs=1e-5)
-    assert a == pytest.approx(6_971_600, abs=10)
+    # A = (낙찰하한가 − 예정가격 × r) / (1 − r)
+    #   = (289,985,144 − 328,577,900 × 0.87745) / 0.12255 ≈ 13,663,530  (기초금액 대비 4.16%)
+    assert a == pytest.approx(13_663_530, abs=10)
+
+
+# ── 실측 정답지 회귀 ───────────────────────────────────────────
+
+
+def test_construction_table_matches_declared_a_value():
+    """A값이 원본에 명시된 실측 151건으로 역산기를 검증한다.
+
+    `data/downloads/인포나의투찰성향*.xlsx` 는 A값을 컬럼으로 제공한다.
+    그 A값을 정답으로 두고, 낙찰하한가·예정가격만으로 역산한 결과와 대조한다
+    (시장 데이터에는 A값 컬럼이 없으므로 `declared` 없이 = 동일 조건).
+
+    후보표를 공사+용역 합집합으로 쓰면 법정율 매칭이 30.5% 로 떨어지고
+    A값이 실제의 78.8% 로 과소 산출된다. 공사 표에서는 둘 다 100% 다.
+    """
+    import glob
+    import pandas as pd
+
+    paths = sorted(glob.glob("data/downloads/인포나의투찰성향*.xlsx"))
+    if not paths:
+        pytest.skip("실측 파일 없음 — 로컬 데이터가 있을 때만 도는 회귀 테스트")
+
+    df = pd.concat([pd.read_excel(p, header=1) for p in paths], ignore_index=True)
+
+    def _num(col):
+        return pd.to_numeric(
+            df[col].astype(str).str.replace(",", "", regex=False).str.extract(r"(-?[\d.]+)")[0],
+            errors="coerce",
+        )
+
+    a_true, est, low = _num("A값"), _num("예정가격"), _num("낙찰하한가")
+
+    checked = matched = 0
+    total_true = total_derived = 0
+    for i in range(len(df)):
+        if pd.isna(a_true[i]) or pd.isna(est[i]) or pd.isna(low[i]) or est[i] <= 0:
+            continue
+        checked += 1
+        legal, _eff, a_derived = split_limit_rates(int(est[i]), int(low[i]), None)
+        # 정답 법정율: A값을 알 때의 (낙찰하한가 − A) / (예정가격 − A)
+        r_true = (Decimal(str(low[i])) - Decimal(str(a_true[i]))) / (
+            Decimal(str(est[i])) - Decimal(str(a_true[i]))
+        )
+        if legal is not None and abs(float(legal) - float(r_true)) < 1e-5:
+            matched += 1
+        total_true += a_true[i]
+        total_derived += a_derived
+
+    assert checked >= 100, f"검증 표본이 너무 적다 ({checked}건)"
+    assert matched == checked, f"법정율 오분류 {checked - matched}/{checked}건"
+    assert total_derived == pytest.approx(total_true, rel=1e-4)
 
 
 def test_split_limit_rates_without_lower_limit_price():
@@ -267,3 +335,47 @@ def test_my_position_ignores_a_value_above_base_price():
     pos = calc_my_position(price, base, llr, _bins(-0.7), base * 2)
     assert pos is not None
     assert pos["offset_pct"] == pytest.approx(-0.7)
+
+
+# ── 투찰 유효 조건 (부호 규약) ─────────────────────────────────
+
+
+def test_bid_is_valid_only_when_assumed_rate_exceeds_actual():
+    """내가 건 사정률이 실제보다 **높아야** 유효하다.
+
+    투찰가 ≥ 실제 낙찰하한가 이어야 하는데, 양쪽 모두
+    `(기초금액 × 사정률 − A) × r + A` 꼴이므로 부등식이 사정률 비교로 줄어든다:
+
+        (기초×c − A)·r + A  ≥  (기초×실제 − A)·r + A   ⟺   c ≥ 실제
+
+    이 부호를 뒤집으면 "낮게 걸수록 유효" 라는 정반대 결론이 나온다.
+    실제로 한 번 뒤집어 계산해 최적 사정률을 100.05 로 잘못 잡았다
+    (정정값 100.15). 자사 투찰 151건에서 151/151 로 확인된 규약이다.
+    """
+    base, a, r = 800_000_000, 30_000_000, Decimal("0.87745")
+
+    def floor_at(rate: Decimal) -> int:
+        expected = int(Decimal(base) * rate)
+        return bid_price_with_a_value(expected, a, r)
+
+    actual = floor_at(Decimal("1.0010"))          # 실제 사정률 100.10%
+
+    # 높게 걸면 유효 (내 투찰가가 실제 하한가 이상)
+    assert floor_at(Decimal("1.0015")) >= actual
+    # 낮게 걸면 무효
+    assert floor_at(Decimal("1.0005")) < actual
+    # 정확히 맞히면 경계에서 유효
+    assert floor_at(Decimal("1.0010")) >= actual
+
+
+def test_fixed_preprice_rate_sits_above_market_median():
+    """고정 사정률은 실제 사정률 중앙값보다 위여야 한다.
+
+    아래로 두면 절반 넘게 하한 미달로 실격한다 — 실측 무효율 67% 가 그 상태였다.
+    """
+    from app.api.v1.bidding import FIXED_PREPRICE_RATE
+
+    # 자사 투찰 151건의 실제 사정률 중앙값 100.1059%
+    assert FIXED_PREPRICE_RATE > Decimal("1.001059")
+    # 그렇다고 너무 높으면 유효하기만 하고 낙찰선에서 멀어진다 (c=100.5 → 근접 6건)
+    assert FIXED_PREPRICE_RATE < Decimal("1.003")

@@ -48,7 +48,7 @@ class DataQuality(BaseModel):
     total_bids: int = Field(..., description="분포 계산에 사용된 참여자 수 (선택된 레벨 기준)")
     distribution_level: str = Field(
         "global",
-        description='막대 높이(count)에 사용된 fallback 레벨: "client" | "region" | "type_bucket" | "global"',
+        description='막대 높이(count)에 사용된 fallback 레벨: "client" | "region" | "global"',
     )
     distribution_label: str | None = Field(
         None, description="해당 레벨의 필터값 (global이면 null)"
@@ -71,6 +71,17 @@ class DistributionResponse(BaseModel):
     lower_limit_rate: float = Field(..., description="법정 낙찰하한율 (A값 제외 기준선)")
     a_value: int = Field(0, description="계산에 반영된 A값 (원). 0이면 A값 없는 공고")
     estimated_participants: int = Field(..., description="이번 공고 예상 참여자 수 (과거 유사 공고 평균)")
+    contract_law: str = Field(
+        ...,
+        description='발주처의 적용 계약법: "national"(±2%) | "local"(±3%) | "agency"(지방조달청·혼합) | "unknown"',
+    )
+    preprice_sd_pct: float = Field(
+        ...,
+        description=(
+            "사정률 표준편차 (%). 투찰 시점에 예정가격을 모르므로 내 위치는 이 폭만큼 번져 있다. "
+            "복수예비가격 생성범위가 규정으로 정해져 있어(국가 ±2% / 지방 ±3%) 추정값이 아니다."
+        ),
+    )
     g2b_fetch_status: str = Field(..., description='"ok" | "failed" | "mock"')
     rate_sigma: float | None = Field(
         None,
