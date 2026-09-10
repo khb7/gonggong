@@ -106,6 +106,28 @@ def _trusted_limits_filter():
     )
 
 
+def _verifiable_limits_filter():
+    """낙찰하한율을 **대조할 수 있는** 공고만 남긴다.
+
+    `_trusted_limits_filter()` 는 "모순이 드러난" 공고를 뺀다. 이 필터는 한 겹
+    앞이다 — 애초에 모순이 드러날 수 없는 공고를 뺀다.
+
+    낙찰하한가가 있어야 `낙찰하한가 / 예정가격` 으로 법정 하한율을 검산할 수
+    있다. 없으면 `split_limit_rates()` 가 원본 신고값을 법정=실효 양쪽에 그대로
+    넣고 끝나서(`if not lower_limit_price` 분기), 그 값이 틀려도 알 방법이 없다.
+
+    실측이 그 차이를 보여준다 — 낙찰자 불변식 위반율:
+
+        낙찰하한가 있음   15,430 공고 중 174 (1.1%)
+        낙찰하한가 없음      877 공고 중 229 (26.1%)   ← 23배
+
+    26% 가 깨진 모집단은 나머지 74% 도 믿을 근거가 없다. offset 기준선이
+    법정 하한율이므로 기준선을 못 믿으면 그 공고의 좌표계 전체가 의미를 잃는다.
+    행은 보존하되 집계에서만 뺀다 (전체 16,307 공고 중 877 = 5.4%).
+    """
+    return BidsHistory.lower_limit_price > 0
+
+
 def _target_filters() -> list:
     """
     통계 대상 필터 (적격심사 + 복수예비가격 + 하한율 신뢰 가능).
@@ -122,6 +144,7 @@ def _target_filters() -> list:
             BidsHistory.price_method == TARGET_PRICE_METHOD,
             BidsHistory.price_method == "기타",
         ),
+        _verifiable_limits_filter(),
         _trusted_limits_filter(),
     ]
 

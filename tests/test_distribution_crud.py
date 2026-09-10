@@ -57,10 +57,14 @@ async def _add_notice(
     base_price: int = 800_000_000,
     project_type: str = "조경",
     participants: int = 40,
+    lower_limit_price: int | None = 700_000_000,
+    legal_limit_rate: Decimal | None = LOWER_LIMIT,
 ):
     session.add(
         BidsHistory(
             project_id=project_id,
+            lower_limit_price=lower_limit_price,
+            legal_limit_rate=legal_limit_rate,
             client_name=client_name,
             client_id=client_id,
             region=region,
@@ -280,3 +284,51 @@ async def test_offset_rows_keep_winner_within_rounding_tolerance(db):
 
     bins = await get_offset_distribution(db, client_name="테스트발주처")
     assert _total(bins) == 2, f"허용 오차 안의 공고가 빠졌다: {bins}"
+
+
+# ──────────────────────────────────────────
+# 검증 불가 공고 (낙찰하한가 없음)
+# ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_offset_rows_exclude_notices_without_lower_limit_price(db):
+    """낙찰하한가가 없는 공고는 분포에서 빠진다.
+
+    낙찰하한가가 있어야 `낙찰하한가 / 예정가격` 으로 법정 하한율을 대조할 수
+    있다. 없으면 `split_limit_rates()` 가 원본 신고값을 법정=실효 양쪽에 그대로
+    넣고 끝나서, 그 값이 틀려도 드러날 방법이 없다.
+
+    실측이 그 차이를 보여준다 — 낙찰자 불변식 위반율이
+
+        낙찰하한가 있음   15,430 공고 중 174 (1.1%)
+        낙찰하한가 없음      877 공고 중 229 (26.1%)   ← 23배
+
+    26% 가 깨진 모집단은 나머지 74% 도 믿을 근거가 없다. offset 기준선이
+    법정 하한율이므로, 기준선을 못 믿으면 그 공고의 offset 좌표계 전체가
+    의미를 잃는다. 행은 보존하되 집계에서만 뺀다.
+    """
+    await _add_notice(db, "OK1")
+    await _add_participants(db, "OK1", ["0.880", "0.881", "0.882"])
+
+    # 낙찰하한가 없음 → 하한율을 대조할 수 없다
+    await _add_notice(db, "UNVERIFIABLE", lower_limit_price=None)
+    await _add_participants(db, "UNVERIFIABLE", ["0.884", "0.885", "0.886"])
+    await db.commit()
+
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
+
+    assert _total(bins) == 3, f"검증 불가 공고가 집계에 남았다: {bins}"
+
+
+@pytest.mark.asyncio
+async def test_zero_lower_limit_price_is_also_excluded(db):
+    """0 도 '없음' 으로 본다 — 원본이 빈 칸을 0 으로 채워 보내기도 한다."""
+    await _add_notice(db, "OK1")
+    await _add_participants(db, "OK1", ["0.880", "0.881"])
+    await _add_notice(db, "ZERO", lower_limit_price=0)
+    await _add_participants(db, "ZERO", ["0.884", "0.885"])
+    await db.commit()
+
+    bins = await get_offset_distribution(db, client_name="테스트발주처")
+
+    assert _total(bins) == 2, f"낙찰하한가 0 인 공고가 집계에 남았다: {bins}"

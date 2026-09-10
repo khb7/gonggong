@@ -60,6 +60,9 @@ async def _add_notice(session, pid: str, *, client_name="발주처", region="경
         project_id=pid, client_name=client_name, client_id="None", region=region,
         bid_type="적격심사", price_method="기타", base_price=base_price,
         lower_limit_rate=LOWER_LIMIT, adjustment_rate=Decimal("0.999"),
+        # 낙찰하한가가 있어야 집계 대상이다 — 없으면 하한율을 대조할 수 없어
+        # `_verifiable_limits_filter()` 가 뺀다.
+        lower_limit_price=int(base_price * 0.877), legal_limit_rate=LOWER_LIMIT,
         winner_price=int(base_price * 0.88), bid_date=date(2025, 5, 1), participants=40,
     ))
     session.add(BidLicenseType(project_id=pid, type_name=project_type))

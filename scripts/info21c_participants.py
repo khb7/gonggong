@@ -318,11 +318,22 @@ async def update_bid_type_and_method(project_id: str, bid_type: str, price_metho
 
 
 async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
-    """참여자 Excel -> bid_participants 적재. 삽입 건수 반환."""
+    """참여자 Excel -> bid_participants 적재. 삽입 건수 반환.
+
+    투찰율은 **원본 컬럼을 그대로 믿지 않고 투찰금액에서 다시 계산한다.**
+    원본은 보통 A값이 반영된 조정값을 주지만 공고에 따라 그렇지 않다 —
+    A값 공고 14,579개 중 1,158개(7.9%)에서 전 참여자 행이 어긋난다.
+    낙찰자 불변식으로 판정하면 재계산이 160:1 로 옳다
+    (`app.engine.a_value.bid_rate_with_a_value` 주석 참고).
+
+    예정가격을 모르면 재계산할 수 없으므로 그때만 원본값을 쓴다.
+    목록 leg 가 먼저 돌면(daily_collect) 예정가격은 이미 들어와 있다.
+    """
     import pandas as pd
     from decimal import Decimal
     from app.db.session import AsyncSessionLocal
-    from app.db.models import BidParticipants
+    from app.db.models import BidParticipants, BidsHistory
+    from app.engine.a_value import bid_rate_with_a_value
     from sqlalchemy import select
 
     try:
@@ -363,15 +374,27 @@ async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
 
     inserted = 0
     async with AsyncSessionLocal() as session:
+        # 재계산에 쓸 공고 값. 목록 leg 가 먼저 돌면 채워져 있다.
+        notice = (await session.execute(
+            select(BidsHistory.est_price, BidsHistory.a_value)
+            .where(BidsHistory.project_id == project_id)
+        )).first()
+        est_price = int(notice[0] or 0) if notice else 0
+        a_value = int(notice[1] or 0) if notice else 0
+
         for _, row in df.iterrows():
             try:
                 rank = int(float(str(row[col_rank]).replace(",", "").strip()))
                 amount = int(float(str(row[col_amount]).replace(",", "").strip()))
                 rate_raw = float(str(row[col_rate]).replace(",", "").strip())
                 # 투찰율이 100% 단위면 소수로 변환
-                bid_rate = Decimal(str(rate_raw / 100 if rate_raw > 1 else rate_raw))
+                source_rate = Decimal(str(rate_raw / 100 if rate_raw > 1 else rate_raw))
             except (ValueError, TypeError):
                 continue
+
+            # 투찰금액에서 다시 계산한 값을 우선한다. 89% 는 원본과 같고,
+            # 갈리는 11% 에서는 재계산이 옳다는 것이 낙찰자 불변식으로 확인됐다.
+            bid_rate = bid_rate_with_a_value(amount, est_price, a_value) or source_rate
 
             existing = await session.scalar(
                 select(BidParticipants).where(

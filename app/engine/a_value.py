@@ -287,6 +287,43 @@ def bid_price_with_a_value(
     return int(price.to_integral_value(rounding=ROUND_DOWN))
 
 
+def bid_rate_with_a_value(
+    bid_amount: int,
+    expected_price: int,
+    a_value: int,
+) -> Decimal | None:
+    """
+    투찰금액에서 투찰율을 역산한다. `bid_price_with_a_value` 의 역함수다.
+
+        투찰율 = (투찰금액 − A) / (예정가격 − A)
+
+    **원본 투찰율 컬럼을 믿지 못할 때 쓴다.** info21c 원본은 보통 A값이 반영된
+    조정값을 주지만, 공고에 따라 그렇지 않은 것이 실측으로 확인됐다 —
+    A값 공고 14,579개 중 1,158개(7.9%)는 **전 참여자 행이** 재계산과 어긋난다.
+    공고 단위로 뭉치는 것으로 보아 원본 컬럼의 의미가 공고마다 다르다.
+
+    어느 쪽이 옳은지는 낙찰자 불변식이 판정한다 — 낙찰자의 투찰율은 법정
+    하한율 이상이어야 한다(미달은 실격이라 낙찰될 수 없다). 두 값이 갈리는
+    낙찰자 1,267행에서 재계산값만 불변식을 만족한 것이 160건, 저장값만
+    만족한 것이 1건이었다. 160:1 로 재계산이 옳다.
+
+    Args:
+        bid_amount: 투찰금액 (원)
+        expected_price: 예정가격 (원)
+        a_value: A값 (원)
+
+    Returns:
+        투찰율. 계산이 성립하지 않으면 None — 없는 근거로 값을 지어내지 않는다.
+    """
+    if bid_amount <= 0 or expected_price <= 0:
+        return None
+    a = max(0, a_value or 0)
+    denom = Decimal(expected_price) - Decimal(a)
+    if denom <= 0:
+        return None
+    return (Decimal(bid_amount) - Decimal(a)) / denom
+
+
 def split_limit_rates(
     expected_price: int,
     lower_limit_price: int | None,

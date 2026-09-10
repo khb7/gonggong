@@ -379,3 +379,53 @@ def test_fixed_preprice_rate_sits_above_market_median():
     assert FIXED_PREPRICE_RATE > Decimal("1.001059")
     # 그렇다고 너무 높으면 유효하기만 하고 낙찰선에서 멀어진다 (c=100.5 → 근접 6건)
     assert FIXED_PREPRICE_RATE < Decimal("1.003")
+
+
+# ── 투찰율 재계산 ─────────────────────────────────────────────────────────────
+
+def test_bid_rate_with_a_value_inverts_bid_price():
+    """`bid_price_with_a_value` 의 역함수여야 한다.
+
+    투찰가 = (예정가격 − A) × r + A  이므로
+    r      = (투찰가 − A) / (예정가격 − A)
+    """
+    from app.engine.a_value import bid_price_with_a_value, bid_rate_with_a_value
+
+    est, a, r = 1_000_000_000, 37_100_000, Decimal("0.89745")
+    price = bid_price_with_a_value(est, a, r)
+    back = bid_rate_with_a_value(price, est, a)
+    assert back is not None
+    # 투찰가가 정수로 잘리므로 원 단위 절사분만큼만 어긋난다
+    assert abs(back - r) < Decimal("0.00000001")
+
+
+def test_bid_rate_with_a_value_matches_plain_ratio_when_no_a():
+    """A값이 0이면 그냥 투찰금액/예정가격이다."""
+    from app.engine.a_value import bid_rate_with_a_value
+
+    assert bid_rate_with_a_value(897_450_000, 1_000_000_000, 0) == Decimal("0.89745")
+
+
+def test_bid_rate_with_a_value_rejects_impossible_inputs():
+    """계산이 성립하지 않으면 None — 지어내지 않는다."""
+    from app.engine.a_value import bid_rate_with_a_value
+
+    assert bid_rate_with_a_value(100, 0, 0) is None          # 예정가격 없음
+    assert bid_rate_with_a_value(100, 1000, 1000) is None     # 예정가격 == A
+    assert bid_rate_with_a_value(100, 1000, 2000) is None     # A > 예정가격
+    assert bid_rate_with_a_value(0, 1000, 0) is None          # 투찰금액 없음
+
+
+def test_bid_rate_with_a_value_restores_winner_invariant():
+    """실측 회귀 — A값 공고에서 원본 투찰율이 A값 미반영으로 들어온 사례.
+
+    R25BK01182094-000: 저장된 투찰율 0.833984 가 법정 하한율 0.87745 아래라
+    "낙찰자가 하한 미달" 이라는 불가능한 상태였다. 금액은 정상이었고,
+    A값을 반영해 다시 계산하면 하한 바로 위로 돌아온다.
+    """
+    from app.engine.a_value import bid_rate_with_a_value
+
+    rate = bid_rate_with_a_value(12_089_169_000, 13_736_086_575, 294_533_413)
+    assert rate is not None
+    assert rate > Decimal("0.87745")            # 불변식 회복
+    assert abs(rate - Decimal("0.877476")) < Decimal("0.000001")

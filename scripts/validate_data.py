@@ -235,30 +235,47 @@ async def validate(conn) -> tuple[list[str], list[str], int]:
     # 비교 기준선은 실효 하한율이 아니라 법정 하한율이다.
     # 근거: md/design/bid_rate_definitions.md
     # COUNT(*) FILTER 는 Postgres 전용이라 SUM(CASE ...) 로 바꿨다 (SQLite 호환).
+    # 낙찰하한가가 없는 공고는 애초에 하한율을 대조할 수 없어 위반율이 23배 높다
+    # (26.1% vs 1.1%). 엔진이 이미 집계에서 빼므로(`_verifiable_limits_filter`)
+    # 두 모집단을 갈라서 보고한다 — 합쳐 세면 고칠 수 없는 229건이 매주 경고로
+    # 떠서 정작 고쳐야 할 소수가 묻힌다.
     inv = await conn.fetchrow(
         """
         SELECT SUM(CASE WHEN w.bid_rate
                           < COALESCE(bh.legal_limit_rate, bh.lower_limit_rate) - 0.00002
                         THEN 1 ELSE 0 END) AS viol,
-               COUNT(*) AS tot
+               COUNT(*) AS tot,
+               SUM(CASE WHEN w.bid_rate
+                          < COALESCE(bh.legal_limit_rate, bh.lower_limit_rate) - 0.00002
+                        AND COALESCE(bh.lower_limit_price, 0) > 0
+                        THEN 1 ELSE 0 END) AS viol_in_scope,
+               SUM(CASE WHEN COALESCE(bh.lower_limit_price, 0) > 0
+                        THEN 1 ELSE 0 END) AS tot_in_scope
         FROM bid_participants w
         JOIN bids_history bh ON w.project_id = bh.project_id
         WHERE w.is_winner
         """
     )
     if inv and inv["tot"]:
-        viol_pct = inv["viol"] / inv["tot"] * 100
+        in_scope = inv["tot_in_scope"] or 0
+        viol_in = inv["viol_in_scope"] or 0
+        excluded = inv["viol"] - viol_in
+        viol_pct = viol_in / in_scope * 100 if in_scope else 0.0
         print(
-            f"[불변식] 낙찰자 투찰율 < 법정 하한율: "
-            f"{viol_pct:.1f}% ({inv['viol']}/{inv['tot']})"
+            f"[불변식] 낙찰자 투찰율 < 법정 하한율 (집계 대상): "
+            f"{viol_pct:.2f}% ({viol_in}/{in_scope})"
+        )
+        print(
+            f"[불변식] 낙찰하한가 없어 집계에서 제외된 위반: {excluded}건 "
+            f"— 대조 근거가 없어 고칠 수 없다"
         )
         if viol_pct >= 10:
             failures.append(
                 f"낙찰자 불변식 위반 {viol_pct:.1f}% — 하한율 오염. "
                 f"etl_participants.py --update-limits 로 원본 하한율 재적재 필요"
             )
-        elif inv["viol"] > 0:
-            warnings.append(f"낙찰자 불변식 위반 {inv['viol']}건")
+        elif viol_in > 0:
+            warnings.append(f"낙찰자 불변식 위반 {viol_in}건 (집계 대상 내)")
     else:
         print("[불변식] 참여자 데이터 없음 — 검사 건너뜀")
 
