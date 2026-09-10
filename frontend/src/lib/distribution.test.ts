@@ -4,6 +4,10 @@ import {
   computeLocalPosition,
   computeMyOffsetPct,
   findBestWinRateBin,
+  landingSdPct,
+  invalidProbability,
+  expectedWinRate,
+  buildOffsetTradeoff,
 } from "@/lib/distribution";
 import type { OffsetBucket } from "@/lib/api";
 
@@ -518,5 +522,131 @@ describe("findBestWinRateBin", () => {
 
   it("기초금액이 없으면 null 을 반환한다", () => {
     expect(findBestWinRateBin([bin(-0.1, 100, 20)], 0, llr)).toBeNull();
+  });
+});
+
+// ── 무효율 ↔ 기대 낙찰 교환 ─────────────────────────────────────────────
+
+describe("landingSdPct", () => {
+  const llr = 0.89745;
+
+  it("A값이 없으면 사정률 산포 × 하한율", () => {
+    expect(landingSdPct(0.744, llr, 800_000_000, 0, 0)).toBeCloseTo(0.744 * llr, 6);
+  });
+
+  it("A값이 있으면 그만큼 산포가 커진다", () => {
+    const base = 800_000_000;
+    const a = base * 0.05;
+    expect(landingSdPct(0.744, llr, base, a, 0)).toBeCloseTo((0.744 * llr) / 0.95, 6);
+  });
+
+  it("조준 offset 이 높으면 산포도 그만큼 커진다", () => {
+    expect(landingSdPct(0.744, llr, 800_000_000, 0, 1.0)).toBeCloseTo(
+      0.744 * (llr + 0.01),
+      6,
+    );
+  });
+
+  it("사정률 산포를 모르면 0 이다 — 지어내지 않는다", () => {
+    expect(landingSdPct(0, llr, 800_000_000, 0, 0)).toBe(0);
+  });
+});
+
+describe("invalidProbability", () => {
+  it("하한선에 딱 붙이면 50% 다", () => {
+    expect(invalidProbability(0, 0.7)).toBeCloseTo(50, 1);
+  });
+
+  it("1σ 위로 올리면 약 15.9% 다", () => {
+    expect(invalidProbability(0.7, 0.7)).toBeCloseTo(15.87, 1);
+  });
+
+  it("2σ 위로 올리면 약 2.3% 다", () => {
+    expect(invalidProbability(1.4, 0.7)).toBeCloseTo(2.28, 1);
+  });
+
+  it("하한선 아래를 조준하면 50% 를 넘는다", () => {
+    expect(invalidProbability(-0.7, 0.7)).toBeCloseTo(84.13, 1);
+  });
+
+  it("산포가 없으면 하한선 위는 0%, 아래는 100%", () => {
+    expect(invalidProbability(0.5, 0)).toBe(0);
+    expect(invalidProbability(-0.5, 0)).toBe(100);
+  });
+});
+
+describe("expectedWinRate", () => {
+  it("산포가 0 이면 조준한 bin 의 낙찰 빈도 그대로다", () => {
+    const bins = [bin(0.0, 100, 4), bin(0.1, 100, 1)];
+    expect(expectedWinRate(bins, 0.0, 0)).toBeCloseTo(4, 5);
+  });
+
+  it("하한 미달 구간은 기여하지 않는다 — 무효라 낙찰될 수 없다", () => {
+    // 음수 bin 에 낙찰이 찍혀 있어도(하한율 오염 잔재) 무시한다
+    const bins = [bin(-0.1, 100, 50), bin(0.0, 100, 4)];
+    expect(expectedWinRate(bins, -0.1, 0)).toBe(0);
+  });
+
+  it("산포가 크면 이웃 bin 으로 기대값이 번진다", () => {
+    const bins = [bin(0.0, 100, 10), bin(0.5, 100, 0)];
+    const sharp = expectedWinRate(bins, 0.0, 0.05);
+    const blurred = expectedWinRate(bins, 0.0, 0.5);
+    expect(sharp).toBeGreaterThan(blurred);
+  });
+
+  it("낙찰 표본이 없으면 0 이다", () => {
+    expect(expectedWinRate([bin(0.0, 100, 0)], 0, 0.7)).toBe(0);
+  });
+});
+
+describe("buildOffsetTradeoff", () => {
+  const basePrice = 800_000_000;
+  const llr = 0.89745;
+  const bins = [
+    bin(-0.2, 200, 0),
+    bin(-0.1, 200, 0),
+    bin(0.0, 200, 8),
+    bin(0.1, 200, 2),
+    bin(0.3, 200, 1),
+    bin(1.0, 200, 0),
+  ];
+
+  it("사정률 산포를 모르면 null — 계산 근거가 없다", () => {
+    expect(buildOffsetTradeoff(bins, basePrice, llr, 0, 0, 0)).toBeNull();
+  });
+
+  it("기초금액이 없으면 null", () => {
+    expect(buildOffsetTradeoff(bins, 0, llr, 0, 0.744, 0)).toBeNull();
+  });
+
+  it("조준 사다리의 첫 행이 추천 자리다", () => {
+    const r = buildOffsetTradeoff(bins, basePrice, llr, 0, 0.744, 0)!;
+    expect(r.rows[0].offset_pct).toBe(0);
+    expect(r.rows[0].is_recommended).toBe(true);
+    expect(r.rows.slice(1).every((x) => !x.is_recommended)).toBe(true);
+  });
+
+  it("위로 올릴수록 무효 확률이 낮아진다", () => {
+    const r = buildOffsetTradeoff(bins, basePrice, llr, 0, 0.744, 0)!;
+    const invalid = r.rows.map((x) => x.invalid_pct);
+    expect(invalid).toEqual([...invalid].sort((a, b) => b - a));
+    expect(invalid[0]).toBeCloseTo(50, 0);
+  });
+
+  it("투찰가는 A값을 반영한다", () => {
+    const a = 30_000_000;
+    const r = buildOffsetTradeoff(bins, basePrice, llr, a, 0.744, 0.3)!;
+    expect(r.rows[0].estimated_price).toBe(Math.round((basePrice - a) * (llr + 0.003) + a));
+  });
+
+  it("시장 실측 무효율은 하한 미달 참여 비율이다", () => {
+    // 400 / 1200 = 33.3%
+    const r = buildOffsetTradeoff(bins, basePrice, llr, 0, 0.744, 0)!;
+    expect(r.market_invalid_pct).toBeCloseTo(33.3, 1);
+  });
+
+  it("착지 산포를 함께 돌려준다", () => {
+    const r = buildOffsetTradeoff(bins, basePrice, llr, 0, 0.744, 0)!;
+    expect(r.landing_sd_pct).toBeCloseTo(0.744 * llr, 3);
   });
 });

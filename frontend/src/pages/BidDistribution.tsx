@@ -14,6 +14,7 @@ import {
   computeMyOffsetPct,
   findWinZone,
   findBestWinRateBin,
+  buildOffsetTradeoff,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
   type LocalPosition,
@@ -222,6 +223,20 @@ export default function BidDistribution() {
       result.a_value,
     );
   }, [result, prepared]);
+
+  // 조준 위치를 올렸을 때 무효율과 기대 낙찰이 어떻게 교환되는지.
+  // 사정률 산포를 모르면(계약법 불명) null 이고, 그때는 표를 그리지 않는다.
+  const tradeoff = useMemo(() => {
+    if (!result || !bestBin) return null;
+    return buildOffsetTradeoff(
+      prepared.bins,
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+      result.preprice_sd_pct,
+      bestBin.offset_pct,
+    );
+  }, [result, prepared, bestBin]);
 
   // 구간 안팎 낙찰률 비교. count(필터 표본)와 win_count(전체 표본)의
   // 출처가 다르면 성립하지 않으므로 같은 표본일 때만 계산한다.
@@ -542,6 +557,93 @@ export default function BidDistribution() {
                     {result.preprice_sd_pct > 0 ? ` ±${result.preprice_sd_pct.toFixed(1)}% ` : " "}
                     흔들립니다. 이 금액은 과거 분포에서 가장 유리했던 자리일 뿐, 확정값이 아닙니다.
                   </p>
+
+                  {/*
+                    무효율 ↔ 기대 낙찰 교환표.
+                    추천가 하나만 보여주면 "이 금액이 정답" 으로 읽힌다. 실제로는
+                    하한선에 붙일수록 기대 낙찰이 높은 대신 무효도 같이 오르는
+                    교환이고, 그 교환을 눈으로 보고 고르는 게 이 도구의 일이다.
+                  */}
+                  {tradeoff && (
+                    <div className="mt-2.5 pt-2.5 border-t border-primary/20">
+                      <p className="text-xs font-semibold mb-1">이 금액을 넣으면 어떻게 되나</p>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        투찰할 때는 예정가격을 모릅니다. 개찰에서 예정가격이 뽑히는 순간
+                        내 자리가 통째로 밀리는데, 그 폭이{" "}
+                        <span className="font-mono font-semibold text-foreground">
+                          ±{tradeoff.landing_sd_pct.toFixed(2)}%p
+                        </span>{" "}
+                        입니다 ({LAW_LABEL[result.contract_law] ?? "구분 불명"} 사정률 산포 기준).
+                        하한선 아래로 밀리면 등수와 상관없이{" "}
+                        <span className="font-semibold text-rose-600 dark:text-rose-400">무효</span>
+                        {" "}— 하한가 미달로 그냥 탈락입니다.
+                      </p>
+
+                      <div className="overflow-x-auto mt-2">
+                        <table className="w-full text-[11px] tabular-nums">
+                          <thead>
+                            <tr className="text-muted-foreground border-b border-primary/20">
+                              <th className="text-left font-medium py-1">조준</th>
+                              <th className="text-right font-medium py-1">투찰가</th>
+                              <th className="text-right font-medium py-1">무효 확률</th>
+                              <th className="text-right font-medium py-1">기대 낙찰</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {tradeoff.rows.map((r) => (
+                              <tr
+                                key={r.offset_pct}
+                                className={
+                                  r.is_recommended
+                                    ? "font-semibold border-b border-primary/10"
+                                    : "border-b border-primary/10 last:border-0"
+                                }
+                              >
+                                <td className="py-1 font-mono">
+                                  {r.offset_pct > 0 ? "+" : ""}
+                                  {r.offset_pct.toFixed(1)}%p
+                                  {r.is_recommended && (
+                                    <span className="ml-1 text-[10px] font-normal text-primary">추천</span>
+                                  )}
+                                </td>
+                                <td className="py-1 text-right font-mono">
+                                  {formatNumber(r.estimated_price)}
+                                </td>
+                                <td className="py-1 text-right font-mono text-rose-600 dark:text-rose-400">
+                                  {r.invalid_pct.toFixed(0)}%
+                                </td>
+                                <td className="py-1 text-right font-mono text-emerald-700 dark:text-emerald-400">
+                                  {r.expected_win_pct.toFixed(2)}%
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="text-[10px] text-muted-foreground mt-2 space-y-1 leading-relaxed">
+                        <p>
+                          <span className="font-semibold text-foreground">무효 확률</span> — 개찰에서
+                          내 금액이 하한선 아래로 밀릴 확률입니다. 무효면 낙찰 후보에도 못 듭니다.
+                        </p>
+                        <p>
+                          <span className="font-semibold text-foreground">기대 낙찰</span> — 무효까지
+                          이미 반영한 값입니다. "이 자리에 100번 넣으면 몇 번 낙찰됐겠는가" 를
+                          과거 분포로 계산한 것이고, 무효는 0회로 셉니다.
+                        </p>
+                        <p>
+                          위로 올리면 무효는 확 줄지만 기대 낙찰도 같이 줄어듭니다.
+                          <span className="font-semibold text-foreground"> 무효를 피하는 건 공짜가 아닙니다.</span>
+                          {" "}과거 참여의{" "}
+                          <span className="font-semibold text-foreground">
+                            {tradeoff.market_invalid_pct.toFixed(0)}%
+                          </span>
+                          가 하한 미달이었습니다 — 무효는 사고가 아니라 이 시장의 정상 비용이고,
+                          낙찰자 대부분은 하한선에 붙여 넣고 사정률 운을 받은 사람들입니다.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

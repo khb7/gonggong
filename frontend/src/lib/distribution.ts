@@ -518,3 +518,185 @@ export function findBestWinRateBin(
     multiple: overallRate > 0 ? rate / overallRate : null,
   };
 }
+
+// ── 무효율 ↔ 기대 낙찰 교환 ─────────────────────────────────────────────
+
+/**
+ * 투찰 시점에는 예정가격을 모른다. 우리가 정하는 건 **금액**뿐이고,
+ * 그 금액이 분포 위 어디에 떨어지는지는 개찰 때 사정률이 정한다.
+ *
+ *     착지 offset o'(k) = (기초−A)(r+o) / (k·기초−A) − r        (k = 사정률)
+ *
+ * 그래서 "offset +0.3%p 에 넣는다" 는 조준일 뿐 착지가 아니다.
+ * 착지가 0 아래로 밀리면 하한가 미달로 **무효**다 — 등수 문제가 아니라 탈락이다.
+ *
+ * 이 절의 함수들은 그 두 가지를 숫자로 만든다: 조준 위치별 무효 확률과,
+ * 무효까지 반영한 기대 낙찰 빈도.
+ *
+ * ⚠ 사정률의 중심은 1.0 으로 둔다. 계약법별 평균이 실측으로 갈리는 건 사실이지만
+ *   (`app/engine/contract_law.py`), 그 중심을 옮기면 자사 투찰 151건 검정에서
+ *   오히려 나빠졌다 (tasks.md T-020). 산포만 쓴다.
+ */
+
+/** bin 폭 (%p). 백엔드 히스토그램 해상도와 같아야 한다. */
+const BIN_WIDTH_PCT = 0.1;
+
+/** 표준정규 누적분포. Abramowitz–Stegun 7.1.26 (오차 < 1.5e-7) */
+function normalCdf(z: number): number {
+  const sign = z < 0 ? -1 : 1;
+  const x = Math.abs(z) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * x);
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t +
+      0.254829592) *
+      t *
+      Math.exp(-x * x);
+  return 0.5 * (1 + sign * y);
+}
+
+/**
+ * 조준한 offset 이 실제로 착지할 때의 산포 (%p).
+ *
+ *     do'/dk |k=1 = −(r + o) / (1 − A/기초)
+ *
+ * 즉 사정률 산포가 하한율만큼 증폭되어 offset 축으로 옮겨온다.
+ * A값이 있으면 분모가 줄어 산포가 더 커진다 — A값이 클수록 착지가 더 흔들린다.
+ *
+ * @param prepriceSdPct 사정률 표준편차 (%). 응답의 `preprice_sd_pct`
+ * @param lowerLimitRate 법정 낙찰하한율
+ * @param aimOffsetPct 조준 offset (%p)
+ * @returns 착지 offset 의 표준편차 (%p). 산포를 모르면 0
+ */
+export function landingSdPct(
+  prepriceSdPct: number,
+  lowerLimitRate: number,
+  basePrice: number,
+  aValue: number,
+  aimOffsetPct: number,
+): number {
+  if (!(prepriceSdPct > 0) || !(basePrice > 0)) return 0;
+  const a = normalizeAValue(aValue, basePrice);
+  return (prepriceSdPct * (lowerLimitRate + aimOffsetPct / 100)) / (1 - a / basePrice);
+}
+
+/**
+ * 조준한 offset 이 하한선 아래로 밀릴 확률 (%) = 하한가 미달 무효 확률.
+ *
+ * 산포가 0 이면(계약법 불명 등) 확률이 아니라 결정론이다 — 0 또는 100.
+ */
+export function invalidProbability(aimOffsetPct: number, landingSd: number): number {
+  if (!(landingSd > 0)) return aimOffsetPct >= 0 ? 0 : 100;
+  return normalCdf(-aimOffsetPct / landingSd) * 100;
+}
+
+/**
+ * 조준한 offset 의 기대 낙찰 빈도 (%).
+ *
+ * 착지 분포로 bin 별 과거 낙찰 빈도를 가중평균한다. 무효(착지 < 0)는 낙찰 0 이므로
+ * 자연히 빠진다 — 무효 확률이 이미 이 값에 녹아 있다.
+ *
+ * **하한 미달 bin 은 낙찰 빈도가 찍혀 있어도 버린다.** 하한가 미달은 무효라
+ * 물리적으로 낙찰될 수 없고, 거기 찍힌 값은 하한율 오염의 잔재다
+ * (실측 낙찰자 15,207명 중 음수 offset 80명 = 0.5%).
+ */
+export function expectedWinRate(
+  bins: OffsetBucket[],
+  aimOffsetPct: number,
+  landingSd: number,
+): number {
+  const half = BIN_WIDTH_PCT / 2;
+  let sum = 0;
+  for (const b of bins) {
+    if (b.offset_pct < 0) continue;
+    const rate = b.historical_win_rate;
+    if (rate === null || rate <= 0) continue;
+
+    let p: number;
+    if (!(landingSd > 0)) {
+      p = Math.abs(b.offset_pct - aimOffsetPct) < half ? 1 : 0;
+    } else {
+      p =
+        normalCdf((b.offset_pct + half - aimOffsetPct) / landingSd) -
+        normalCdf((b.offset_pct - half - aimOffsetPct) / landingSd);
+    }
+    sum += p * rate;
+  }
+  return sum;
+}
+
+/** 조준 사다리 — 추천 자리에서 이만큼(%p) 위까지 올려본다 */
+const TRADEOFF_STEPS = [0, 0.3, 0.5, 1.0];
+
+export interface TradeoffRow {
+  /** 조준 offset (%p) */
+  offset_pct: number;
+  /** 그 자리의 투찰가 (원) */
+  estimated_price: number;
+  /** 하한가 미달로 무효가 될 확률 (%) */
+  invalid_pct: number;
+  /** 무효까지 반영한 기대 낙찰 빈도 (%) */
+  expected_win_pct: number;
+  /** 추천 자리인지 */
+  is_recommended: boolean;
+}
+
+export interface OffsetTradeoff {
+  rows: TradeoffRow[];
+  /** 착지 offset 의 산포 (%p) — 추천 자리 기준 */
+  landing_sd_pct: number;
+  /** 과거 참여자가 실제로 하한 미달이었던 비율 (%) */
+  market_invalid_pct: number;
+}
+
+/**
+ * 조준 위치를 올렸을 때 무효율과 기대 낙찰이 어떻게 교환되는지 표로 만든다.
+ *
+ * 실측(참여 580만 건)에서 이 교환은 **한쪽으로 기운다**: 무효를 줄이려고 올리면
+ * 기대 낙찰이 더 빨리 떨어진다. 하한선에 붙이는 게 기대값 기준으로는 최선이고,
+ * 무효 40~50% 는 이 시장의 정상 비용이다. 다만 +0.3%p 까지는 기대 낙찰이 거의
+ * 안 떨어지면서 무효율만 크게 준다 — 그 구간이 실질적인 선택지다.
+ *
+ * @param baseOffsetPct 추천 자리 (findBestWinRateBin 결과)
+ * @returns 사정률 산포나 기초금액이 없으면 null — 없는 근거로 확률을 내지 않는다
+ */
+export function buildOffsetTradeoff(
+  bins: OffsetBucket[],
+  basePrice: number,
+  lowerLimitRate: number,
+  aValue: number,
+  prepriceSdPct: number,
+  baseOffsetPct: number,
+): OffsetTradeoff | null {
+  if (!bins.length || !(basePrice > 0) || !(prepriceSdPct > 0)) return null;
+
+  const a = normalizeAValue(aValue, basePrice);
+
+  const rows: TradeoffRow[] = TRADEOFF_STEPS.map((step, i) => {
+    const offset = Math.round((baseOffsetPct + step) * 10) / 10;
+    const sd = landingSdPct(prepriceSdPct, lowerLimitRate, basePrice, aValue, offset);
+    return {
+      offset_pct: offset,
+      // offset → 금액 역변환. A값 조정의 역이므로 (예정가격 − A) × rate + A
+      estimated_price: Math.round((basePrice - a) * (lowerLimitRate + offset / 100) + a),
+      invalid_pct: invalidProbability(offset, sd),
+      expected_win_pct: expectedWinRate(bins, offset, sd),
+      is_recommended: i === 0,
+    };
+  });
+
+  const total = bins.reduce((s, b) => s + b.count, 0);
+  const below = bins.filter((b) => b.offset_pct < 0).reduce((s, b) => s + b.count, 0);
+
+  return {
+    rows,
+    landing_sd_pct: landingSdPct(
+      prepriceSdPct,
+      lowerLimitRate,
+      basePrice,
+      aValue,
+      baseOffsetPct,
+    ),
+    market_invalid_pct: total > 0 ? (below / total) * 100 : 0,
+  };
+}
