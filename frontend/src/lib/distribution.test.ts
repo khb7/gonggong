@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   prepareDistribution,
   computeLocalPosition,
+  computeOffsetBand,
   computeMyOffsetPct,
   findBestWinRateBin,
   landingSdPct,
@@ -393,6 +394,72 @@ describe("computeLocalPosition — A값", () => {
     const price = priceAt(-0.7, 0);
     const pos = computeLocalPosition(price, basePrice, llr, bins, basePrice * 2)!;
     expect(pos.offset_pct).toBeCloseTo(-0.7, 10);
+  });
+});
+
+
+// ── 사정률 오차 밴드 ────────────────────────────────────────────────────
+//
+// 히스토그램의 과거 offset 은 개찰로 확정된 예정가격 기준인데 내 위치는
+// 기초금액 기준이라, 사정률이 어떻게 나오냐에 따라 내 화살표가 좌우로 밀린다.
+
+describe("computeOffsetBand", () => {
+  const BASE = 1_000_000_000;
+  const LLR = 0.87745;
+  const SIGMA = 0.0072; // 실측 전체 표본 σ
+
+  it("점 추정을 사이에 두는 밴드를 만든다", () => {
+    const band = computeOffsetBand(900_000_000, BASE, LLR, SIGMA)!;
+    expect(band).not.toBeNull();
+    // 점 추정 = 0.9 − 0.87745 = 2.255% → 2.3%
+    expect(band[0]).toBeLessThan(2.3);
+    expect(band[1]).toBeGreaterThan(2.3);
+    expect(band).toEqual([1.6, 2.9]);
+  });
+
+  it("밴드 폭이 bin 해상도(0.1%)보다 훨씬 넓다", () => {
+    const [low, high] = computeOffsetBand(900_000_000, BASE, LLR, SIGMA)!;
+    expect(high - low).toBeGreaterThan(1.0);
+  });
+
+  it("σ가 크면 밴드도 넓어진다", () => {
+    const narrow = computeOffsetBand(900_000_000, BASE, LLR, 0.003)!;
+    const wide = computeOffsetBand(900_000_000, BASE, LLR, 0.012)!;
+    expect(wide[1] - wide[0]).toBeGreaterThan(narrow[1] - narrow[0]);
+  });
+
+  it("σ가 없으면 null — 근거 없는 폭을 그리지 않는다", () => {
+    expect(computeOffsetBand(900_000_000, BASE, LLR, 0)).toBeNull();
+  });
+
+  it("A값을 반영한다", () => {
+    const withoutA = computeOffsetBand(900_000_000, BASE, LLR, SIGMA)!;
+    const withA = computeOffsetBand(900_000_000, BASE, LLR, SIGMA, 100_000_000)!;
+    expect(withA).not.toEqual(withoutA);
+    expect(withA).toEqual([0.4, 1.9]);
+  });
+
+  it("백엔드 calc_offset_band() 와 같은 값을 낸다", () => {
+    // tests/test_distribution.py 의 기대값과 동일해야 한다
+    expect(computeOffsetBand(900_000_000, BASE, LLR, SIGMA)).toEqual([1.6, 2.9]);
+  });
+});
+
+describe("computeLocalPosition — 오차 밴드", () => {
+  const BASE = 1_000_000_000;
+  const LLR = 0.87745;
+  const bins = Array.from({ length: 30 }, (_, i) => bin(Math.round((10 + i)) / 10, 5, 1));
+
+  it("σ를 주면 밴드를 함께 반환한다", () => {
+    const pos = computeLocalPosition(900_000_000, BASE, LLR, bins, 0, 0.0072)!;
+    expect(pos.offsetLowPct).toBe(1.6);
+    expect(pos.offsetHighPct).toBe(2.9);
+  });
+
+  it("σ를 안 주면 밴드는 null이다 (기존 동작 유지)", () => {
+    const pos = computeLocalPosition(900_000_000, BASE, LLR, bins)!;
+    expect(pos.offsetLowPct).toBeNull();
+    expect(pos.offsetHighPct).toBeNull();
   });
 });
 

@@ -181,6 +181,12 @@ export interface BidPosition {
   percentile: number;
   historical_win_rate: number;
   sample_count: number;
+  /** 사정률 +1σ 일 때의 offset (%) — 밴드 하단. σ 를 못 구하면 null */
+  offset_low_pct: number | null;
+  /** 사정률 −1σ 일 때의 offset (%) — 밴드 상단 */
+  offset_high_pct: number | null;
+  /** 밴드 계산에 쓴 사정률 표준편차 (소수) */
+  rate_sigma: number | null;
 }
 
 /** 분포 계산에 쓰인 fallback 레벨 */
@@ -217,6 +223,11 @@ export interface DistributionResult {
    */
   preprice_sd_pct: number;
   g2b_fetch_status: string;
+  /**
+   * 사정률 표준편차 (소수). 내 위치 오차 밴드의 폭이 되는 값이다.
+   * null 이면 표본 부족 등으로 밴드를 그리지 않는다.
+   */
+  rate_sigma: number | null;
   distribution: OffsetBucket[];
   data_quality: DistributionQuality;
   my_position: BidPosition | null;

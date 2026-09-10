@@ -6,6 +6,7 @@ app/engine/distribution.py 단위 테스트
   - build_offset_distribution()
   - build_scoped_distribution()
   - calc_my_position()
+  - calc_offset_band()
 """
 
 import pytest
@@ -14,6 +15,7 @@ from app.engine.distribution import (
     build_offset_distribution,
     build_scoped_distribution,
     calc_my_position,
+    calc_offset_band,
 )
 
 
@@ -327,3 +329,80 @@ def test_my_position_uses_precomputed_global_win_rate():
     # win_count(1) / count(5) = 20% 가 아니라 글로벌 기준 25% 여야 한다
     assert pos["historical_win_rate"] == pytest.approx(25.0)
     assert pos["sample_count"] == 5
+
+
+# ──────────────────────────────────────────
+# 사정률 오차 밴드
+#
+# 히스토그램의 과거 offset 은 확정된 예정가격 기준이고 내 위치는 기초금액
+# 기준이라, 개찰에서 사정률이 어떻게 나오냐에 따라 내 위치가 좌우로 밀린다.
+# ──────────────────────────────────────────
+
+_BASE = 1_000_000_000
+_LLR = Decimal("0.87745")
+_SIGMA = Decimal("0.0072")   # 실측 전체 표본 σ
+
+
+def test_band_brackets_the_point_estimate():
+    """밴드는 사정률 1.0 가정의 점 추정을 사이에 둔다."""
+    low, high = calc_offset_band(900_000_000, _BASE, _LLR, _SIGMA)
+
+    assert low < 2.3 < high      # 점 추정 = 0.9 − 0.87745 = 2.255% → 2.3%
+    assert (low, high) == (1.6, 2.9)
+
+
+def test_band_is_wider_than_one_bin():
+    """밴드 폭이 bin 해상도(0.1%)보다 훨씬 넓다 — 점으로 그리면 안 되는 이유."""
+    low, high = calc_offset_band(900_000_000, _BASE, _LLR, _SIGMA)
+
+    assert high - low > 1.0
+
+
+def test_band_widens_with_sigma():
+    """σ가 크면 밴드도 넓어진다."""
+    narrow = calc_offset_band(900_000_000, _BASE, _LLR, Decimal("0.003"))
+    wide = calc_offset_band(900_000_000, _BASE, _LLR, Decimal("0.012"))
+
+    assert (wide[1] - wide[0]) > (narrow[1] - narrow[0])
+
+
+def test_band_is_none_without_sigma():
+    """σ가 없거나 0이면 밴드를 그리지 않는다 — 근거 없는 폭을 그리지 않는다."""
+    assert calc_offset_band(900_000_000, _BASE, _LLR, Decimal("0")) is None
+
+
+def test_band_accounts_for_a_value():
+    """A값이 있으면 분모가 (예정가격 − A)라 밴드 위치가 달라진다."""
+    without_a = calc_offset_band(900_000_000, _BASE, _LLR, _SIGMA)
+    with_a = calc_offset_band(900_000_000, _BASE, _LLR, _SIGMA, a_value=100_000_000)
+
+    assert with_a != without_a
+    assert with_a == (0.4, 1.9)
+
+
+def test_my_position_includes_band_when_sigma_given():
+    """calc_my_position은 σ를 받으면 밴드를 함께 반환한다."""
+    bins = [
+        {"offset_pct": round(x / 10, 1), "count": 5, "win_count": 1, "historical_win_rate": 20.0}
+        for x in range(10, 40)
+    ]
+
+    pos = calc_my_position(900_000_000, _BASE, _LLR, bins, 0, _SIGMA)
+
+    assert pos["offset_low_pct"] == 1.6
+    assert pos["offset_high_pct"] == 2.9
+    assert pos["rate_sigma"] == pytest.approx(0.0072)
+
+
+def test_my_position_band_is_none_without_sigma():
+    """σ를 안 주면 밴드 필드는 모두 None이다 (기존 동작 유지)."""
+    bins = [
+        {"offset_pct": round(x / 10, 1), "count": 5, "win_count": 1, "historical_win_rate": 20.0}
+        for x in range(10, 40)
+    ]
+
+    pos = calc_my_position(900_000_000, _BASE, _LLR, bins)
+
+    assert pos["offset_low_pct"] is None
+    assert pos["offset_high_pct"] is None
+    assert pos["rate_sigma"] is None

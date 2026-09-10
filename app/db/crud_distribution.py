@@ -34,6 +34,31 @@ _DIST_CACHE_KEY = "offset_distribution"
 
 _GLOBAL_SCOPE_KEY = "global"
 
+# ── 사정률 σ (내 위치 오차 밴드용) ────────────────────────────────────────
+#
+# 히스토그램 x축의 과거 offset 은 개찰로 확정된 **예정가격** 기준이고,
+# 아직 개찰 전인 내 투찰가는 **기초금액** 기준으로 잰다 (사정률≈1.0 근사).
+# 두 자가 다르므로 내 위치는 사정률이 흔들리는 만큼 좌우로 밀린다.
+# 그 흔들림 폭을 재기 위한 값이 여기서 구하는 σ 다.
+#
+# 발주기관 유형별로 예비가격 생성 구간이 다르지만(조달청 ±2% / 지자체 ±3%),
+# 사정률은 그중 4개의 **평균**이라 구간 차이가 거의 흡수된다.
+# 실측 18,409건: 조달청 σ=0.0070 / 지자체 σ=0.0075 / 전체 σ=0.0072.
+# 차이가 σ 자체의 5% 수준이라 기관별로 나누지 않고 전체 표본으로 계산한다.
+
+_SIGMA_CACHE_KEY = "adjustment_rate_sigma"
+
+# σ 계산에 요구하는 최소 표본 수
+_MIN_SIGMA_SAMPLE = 100
+
+# 사정률 유효 범위. 복수예비가격은 기초금액 ±3% 안에서 생성되므로 이 밖의 값은
+# 적재 오염이다 (실측 min 0.950 / max 1.048). 오염분이 σ 를 부풀리는 것을 막는다.
+_SIGMA_RATE_MIN = Decimal("0.90")
+_SIGMA_RATE_MAX = Decimal("1.10")
+
+# σ 상한. 이보다 크면 표본을 믿을 수 없다고 보고 밴드를 그리지 않는다.
+_SIGMA_MAX = Decimal("0.05")
+
 
 @dataclass(frozen=True)
 class DistributionScope:
@@ -479,3 +504,43 @@ async def get_avg_participants(
     # 4. 전체
     result = await _avg(base)
     return result or 0
+
+
+async def get_adjustment_rate_sigma(db: AsyncSession) -> Decimal | None:
+    """
+    사정률의 표준편차 σ 를 반환한다. 내 위치 오차 밴드의 폭이 되는 값이다.
+
+    표본이 부족하거나(_MIN_SIGMA_SAMPLE 미만) σ 가 비상식적으로 크면
+    (_SIGMA_MAX 초과) None 을 반환한다. 이 경우 밴드를 그리지 않는다 —
+    근거 없는 폭을 그리느니 안 그리는 편이 낫다.
+
+    Returns:
+        σ (Decimal, 소수 단위. 예: Decimal("0.0072")) 또는 None
+    """
+    cached = distribution_cache.get(_SIGMA_CACHE_KEY)
+    if cached is not None:
+        # None 결과도 캐시해야 매 요청마다 재조회하지 않는다 → 1-튜플로 감싼다.
+        return cached[0]
+
+    q = (
+        select(
+            func.stddev_samp(BidsHistory.adjustment_rate).label("sigma"),
+            func.count().label("cnt"),
+        )
+        .select_from(BidsHistory)
+        .where(
+            *_target_filters(),
+            BidsHistory.adjustment_rate >= _SIGMA_RATE_MIN,
+            BidsHistory.adjustment_rate <= _SIGMA_RATE_MAX,
+        )
+    )
+    row = (await db.execute(q)).one()
+
+    sigma: Decimal | None = None
+    if row.cnt is not None and row.cnt >= _MIN_SIGMA_SAMPLE and row.sigma is not None:
+        candidate = Decimal(str(row.sigma))
+        if Decimal(0) < candidate <= _SIGMA_MAX:
+            sigma = candidate
+
+    distribution_cache.set(_SIGMA_CACHE_KEY, (sigma,))
+    return sigma

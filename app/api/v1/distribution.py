@@ -16,6 +16,7 @@ from app.db.crud_distribution import (
     get_offset_distribution_cached,
     resolve_offset_distribution,
     get_avg_participants,
+    get_adjustment_rate_sigma,
 )
 from app.engine import contract_law
 from app.engine.distribution import build_scoped_distribution, calc_my_position
@@ -123,10 +124,25 @@ async def get_bid_distribution(
         estimated_participants = 0
 
     # ── 5. 내 위치 계산 ───────────────────────────────────────
+    #
+    # 내 위치는 사정률≈1.0 근사로 잰 점 추정이라 실제와 어긋난다.
+    # (히스토그램의 과거 offset 은 확정된 예정가격 기준, 내 위치는 기초금액 기준)
+    # σ 를 구해 넘기면 그 어긋남을 ±1σ 밴드로 함께 반환한다.
+    # 여기서 실패해도 분포 응답까지 죽이지 않는다 — 밴드만 사라진다.
+    try:
+        rate_sigma = await get_adjustment_rate_sigma(db)
+    except Exception:
+        rate_sigma = None
+
     my_position_out: MyPositionResponse | None = None
     if body.my_bid_price and base_price > 0:
         pos = calc_my_position(
-            body.my_bid_price, base_price, lower_limit_rate, distribution, a_value
+            body.my_bid_price,
+            base_price,
+            lower_limit_rate,
+            distribution,
+            a_value,
+            rate_sigma,
         )
         if pos:
             my_position_out = MyPositionResponse(**pos)
@@ -154,6 +170,7 @@ async def get_bid_distribution(
         contract_law=contract_law.classify(client_name),
         preprice_sd_pct=float(contract_law.preprice_sd(client_name)) * 100,
         g2b_fetch_status=g2b_status,
+        rate_sigma=float(rate_sigma) if rate_sigma else None,
         distribution=distribution_out,
         data_quality=DataQuality(
             total_bids=total_bids,

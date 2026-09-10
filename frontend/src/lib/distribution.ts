@@ -123,6 +123,59 @@ export interface LocalPosition {
   /** 해당 구간 과거 낙찰 빈도 (%). 참여 0건이면 null */
   historical_win_rate: number | null;
   sample_count: number;
+  /** 사정률 +1σ 일 때의 offset (%) — 밴드 하단. σ 가 없으면 null */
+  offsetLowPct: number | null;
+  /** 사정률 −1σ 일 때의 offset (%) — 밴드 상단 */
+  offsetHighPct: number | null;
+}
+
+/** 사정률을 하나 가정했을 때의 내 offset (%, 0.1% 단위) */
+function offsetPctAtRate(
+  myBidPrice: number,
+  basePrice: number,
+  lowerLimitRate: number,
+  a: number,
+  adjustmentRate: number,
+): number {
+  const estimatedPrice = basePrice * adjustmentRate;
+  const adjusted = (myBidPrice - a) / (estimatedPrice - a);
+  return Math.round((adjusted - lowerLimitRate) * 1000) / 10;
+}
+
+/**
+ * 내 위치의 불확실성 밴드(±1σ)를 계산한다.
+ *
+ * 히스토그램의 과거 offset 은 개찰로 확정된 **예정가격** 기준이다.
+ * 내 투찰가는 개찰 전이라 예정가격을 모르므로 **기초금액**으로 대신 잰다.
+ * 자가 서로 달라, 내 화살표는 사정률이 흔들리는 만큼 좌우로 밀린다.
+ *
+ *     예정가격 = 기초금액 × 사정률
+ *     내 offset = (투찰금액 − A) / (기초금액 × 사정률 − A) − 법정하한율
+ *
+ * 사정률이 크면 분모가 커져 offset 이 작아지므로,
+ * 밴드 하단은 (1+σ), 상단은 (1−σ) 에서 나온다.
+ *
+ * 이 오차는 없앨 수 없다 (예정가격은 개찰 시 정해진다). 폭을 드러내는 게 목적이다.
+ * 백엔드 app/engine/distribution.py 의 calc_offset_band() 와 같은 식이다.
+ */
+export function computeOffsetBand(
+  myBidPrice: number,
+  basePrice: number,
+  lowerLimitRate: number,
+  rateSigma: number,
+  aValue: number = 0,
+): [number, number] | null {
+  if (!rateSigma || rateSigma <= 0 || basePrice <= 0 || myBidPrice <= 0) return null;
+
+  const a = aValue > 0 && aValue < basePrice ? aValue : 0;
+
+  // 사정률이 1에서 크게 벗어나 예정가격이 A값 이하로 내려가면 정의되지 않는다.
+  if (basePrice * (1 - rateSigma) <= a) return null;
+
+  return [
+    offsetPctAtRate(myBidPrice, basePrice, lowerLimitRate, a, 1 + rateSigma),
+    offsetPctAtRate(myBidPrice, basePrice, lowerLimitRate, a, 1 - rateSigma),
+  ];
 }
 
 /**
@@ -141,6 +194,9 @@ export interface LocalPosition {
  *
  * bins 는 prepareDistribution() 의 결과를 넘긴다.
  * 표시 범위 밖이면 null 을 반환한다 (참여 0건인 구간은 null 이 아니다).
+ *
+ * rateSigma 를 주면 사정률 근사 오차를 ±1σ 밴드로 함께 계산한다
+ * (computeOffsetBand 주석 참고). 0 이면 밴드는 null 이다.
  */
 /** A값이 예정가격(≈기초금액) 이상이면 이상값 — 0 으로 무시한다. */
 function normalizeAValue(aValue: number, basePrice: number): number {
@@ -180,6 +236,7 @@ export function computeLocalPosition(
   lowerLimitRate: number,
   bins: OffsetBucket[],
   aValue: number = 0,
+  rateSigma: number = 0,
 ): LocalPosition | null {
   if (!bins.length || myBidPrice <= 0 || basePrice <= 0) return null;
 
@@ -190,6 +247,8 @@ export function computeLocalPosition(
 
   const matching = bins.find((b) => toKey(b.offset_pct) === key);
   if (!matching) return null;
+
+  const band = computeOffsetBand(myBidPrice, basePrice, lowerLimitRate, rateSigma, aValue);
 
   const totalCount = bins.reduce((s, b) => s + b.count, 0);
   const lowerCount = bins
@@ -203,6 +262,8 @@ export function computeLocalPosition(
     percentile: totalCount > 0 ? Math.round((lowerCount / totalCount) * 1000) / 10 : 0,
     historical_win_rate: matching.count > 0 ? matching.historical_win_rate ?? 0 : null,
     sample_count: matching.count,
+    offsetLowPct: band ? band[0] : null,
+    offsetHighPct: band ? band[1] : null,
   };
 }
 
