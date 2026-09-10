@@ -36,6 +36,10 @@ LOGIN_URL   = "https://www.info21c.net/info21c/member/login/index"
 # 공사낙찰 목록 (bidtype=con: 공사, bid_suc=suc: 낙찰)
 LIST_URL    = "https://infose.info21c.net/info21c/bids/list?bidtype=con&bid_suc=suc"
 
+# 목록 한 페이지당 행 수. 엑셀 내보내기가 현재 페이지만 내보내므로
+# 이 값이 곧 "한 파일에 담기는 최대 건수" 다.
+PAGE_SIZE   = 100
+
 DEFAULT_ID  = os.getenv("INFO21C_ID", "nw8856")
 DEFAULT_PW  = os.getenv("INFO21C_PW", "nw8856")
 
@@ -105,11 +109,14 @@ async def set_search_filters(
     end_date: str,
     license_type: str,
     debug: bool = False,
-) -> None:
+) -> int:
     """
     공사낙찰 목록 페이지에서 검색 조건 설정.
     start_date/end_date: YYYYMMDD 형식
     license_type: '0002' 또는 '0023'
+
+    Returns:
+        현재 페이지에 로드된 결과 행 수. 호출부가 페이지 넘김 여부를 판단한다.
     """
     # 공종 코드 → Info21c 체크박스 value 매핑
     LICENSE_CODE_MAP = {"0002": "C002", "0023": "C084"}  # C002=실내건축, C084=조경
@@ -158,18 +165,20 @@ async def set_search_filters(
         await page.wait_for_selector("a.list_link", timeout=TIMEOUT)
     except PWTimeout:
         print("  [!] 결과 로딩 타임아웃. 결과가 없거나 느린 응답입니다.")
-        return
+        return 0
 
-    # ── 페이지 크기를 100으로 변경 (기본 15 → 100) ───────────────────────────
+    # ── 페이지 크기를 PAGE_SIZE 로 변경 (기본 15) ────────────────────────────
+    # run_download 가 "행 수 < PAGE_SIZE 면 마지막 페이지" 로 판단하므로
+    # 여기서 실제로 설정한 값과 그 상수가 반드시 같아야 한다.
     changed = await page.evaluate("""
-        () => {
+        (size) => {
             var sel = document.querySelector('select[name=pageSize]');
             if (!sel) return false;
-            sel.value = '100';
+            sel.value = String(size);
             sel.dispatchEvent(new Event('change', {bubbles: true}));
             return true;
         }
-    """)
+    """, PAGE_SIZE)
     if changed:
         await page.wait_for_timeout(1500)
 
@@ -180,15 +189,64 @@ async def set_search_filters(
         print("  검색 결과를 확인 후 Enter를 누르세요.")
         input("  [Enter 계속]")
 
+    return row_count
+
+
+# ── 페이지 넘김 ───────────────────────────────────────────────────────────────
+async def goto_next_page(page) -> bool:
+    """다음 페이지로 이동. 더 없으면 False.
+
+    엑셀 내보내기는 **현재 페이지만** 내보낸다. pageSize=100 으로 키워도 결과가
+    100건을 넘으면 나머지가 조용히 잘린다 — 2026-05-31 부터 고아 참여자
+    (bid_participants 는 있는데 bids_history 가 없는 공고)가 쌓인 원인이 이것이다.
+    실측: 실내건축 2026-08-29~09-09 은 123건인데 목록은 100건에서 끊겼다.
+
+    `info21c_participants.py::search_and_collect_links` 와 같은 방식이다.
+    거기는 진작 전 페이지를 순회하고 있었고 이쪽만 빠져 있었다.
+    """
+    moved = await page.evaluate(r"""
+        () => {
+            var items = Array.from(document.querySelectorAll('ul.pagination li.page-item'));
+            var cur = items.find(li =>
+                li.classList.contains('disabled') && /^\d+$/.test(li.innerText.trim())
+            );
+            if (cur) {
+                var curNum = parseInt(cur.innerText.trim());
+                var next = items.find(li =>
+                    !li.classList.contains('disabled') &&
+                    parseInt(li.innerText.trim()) === curNum + 1
+                );
+                if (next) { next.querySelector('a').click(); return true; }
+            }
+            var last = items[items.length - 1];
+            if (last && !last.classList.contains('disabled')) {
+                last.querySelector('a').click();
+                return true;
+            }
+            return false;
+        }
+    """)
+    if not moved:
+        return False
+    await page.wait_for_selector("a.list_link", timeout=15_000)
+    await page.wait_for_timeout(800)
+    return True
+
 
 # ── 엑셀 내보내기 ─────────────────────────────────────────────────────────────
-async def export_csv(page, download_dir: Path, license_type: str, start_date: str, end_date: str, debug: bool = False) -> Path:
-    """엑셀 버튼 클릭 → 다이얼로그 처리 → 파일 다운로드."""
-    print("[3/4] 엑셀 내보내기 중...")
+async def export_csv(page, download_dir: Path, license_type: str, start_date: str, end_date: str,
+                     debug: bool = False, page_num: int = 1) -> Path:
+    """엑셀 버튼 클릭 → 다이얼로그 처리 → 파일 다운로드.
+
+    page_num 이 2 이상이면 파일명에 `_p{n}` 을 붙인다. 1페이지는 기존 파일명을
+    유지해야 이미 받아둔 파일·문서의 경로가 그대로 통한다.
+    """
+    print(f"[3/4] 엑셀 내보내기 중... ({page_num}페이지)")
 
     download_dir.mkdir(parents=True, exist_ok=True)
     # 다운로드 파일명 (확장자는 실제 다운로드 후 결정)
-    output_stem = download_dir / f"info21c_{license_type}_{start_date}_{end_date}"
+    suffix_pg = "" if page_num <= 1 else f"_p{page_num}"
+    output_stem = download_dir / f"info21c_{license_type}_{start_date}_{end_date}{suffix_pg}"
 
     # ── 엑셀 버튼 클릭 + 다운로드 대기 ──────────────────────────────────────
     # expect_download는 반드시 클릭 이전에 열어야 다운로드 이벤트를 놓치지 않음
@@ -239,7 +297,7 @@ async def run_download(
     user_id: str,
     password: str,
     use_brave: bool = False,
-) -> Path:
+) -> list[Path]:
     async with async_playwright() as pw:
         launch_kwargs = dict(headless=headless)
         if use_brave and Path(BRAVE_PATH).exists():
@@ -251,9 +309,27 @@ async def run_download(
 
         try:
             await login(page, user_id, password, debug=debug)
-            await set_search_filters(page, start_date, end_date, license_type, debug=debug)
-            path = await export_csv(page, DOWNLOAD_DIR, license_type, start_date, end_date, debug=debug)
-            return path
+            row_count = await set_search_filters(page, start_date, end_date, license_type, debug=debug)
+            if row_count == 0:
+                print("  → 결과 없음, 건너뜀")
+                return []
+
+            paths: list[Path] = []
+            page_num = 1
+            while True:
+                paths.append(await export_csv(
+                    page, DOWNLOAD_DIR, license_type, start_date, end_date,
+                    debug=debug, page_num=page_num,
+                ))
+                # 현재 페이지가 꽉 차 있지 않으면 마지막 페이지다
+                if row_count < PAGE_SIZE:
+                    break
+                if not await goto_next_page(page):
+                    break
+                page_num += 1
+                row_count = await page.locator("a.list_link").count()
+                print(f"  → {page_num}페이지 ({row_count}건)")
+            return paths
         finally:
             if not debug:
                 await browser.close()
@@ -289,7 +365,7 @@ async def main():
     downloaded_files = []
     for lt in types_to_run:
         print(f"\n=== {LICENSE_TYPES[lt]} ({lt}) 다운로드 ===")
-        path = await run_download(
+        paths = await run_download(
             start_date=args.start,
             end_date=args.end,
             license_type=lt,
@@ -299,12 +375,14 @@ async def main():
             password=args.pw,
             use_brave=args.brave,
         )
-        downloaded_files.append(path)
+        downloaded_files.extend(paths)
 
-    print(f"\n=== 다운로드 완료 ===")
+    print(f"\n=== 다운로드 완료 ({len(downloaded_files)}개 파일) ===")
     for f in downloaded_files:
         print(f"  {f}")
-    print("\n다음 단계: python scripts/etl_csv.py --file <경로>")
+    print("\n다음 단계: 받은 파일을 **전부** 적재한다")
+    for f in downloaded_files:
+        print(f"  python scripts/etl_csv.py --file {f}")
 
 
 if __name__ == "__main__":

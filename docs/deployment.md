@@ -161,7 +161,7 @@ DB 는 git 으로 가지 않는다. 로컬에서 만들어 파일째 보낸다.
 ```bash
 # 1. 로컬 — 적재 후 반드시 이 순서
 python scripts/etl_csv.py --file <각 파일> --upsert
-python scripts/build_offset_histogram.py          # 159 스코프 / 약 25,000 bin / 50초
+python scripts/build_offset_histogram.py          # 19 스코프 / 9,297 bin / 35초 (2026-09-10 실측)
 python scripts/validate_data.py                   # FAIL 0 확인
 ```
 
@@ -275,51 +275,59 @@ sudo systemctl reload nginx
 
 ---
 
-## 9. 일별 데이터 수집 (로컬 PC)
+## 9. 데이터 수집 (로컬 PC, 주 1회 수동)
 
 info21c 는 Playwright 로 브라우저를 띄워 로그인하고 Excel 을 받는다. 서버는
-RAM 이 부족하고(956MB 중 여유 472MB) info21c 가 동시 접속을 막으므로,
+RAM 이 부족하고(956MB) info21c 가 동시 접속을 막으므로,
 **수집은 로컬 PC 에서 돌리고 결과 DB 만 서버로 올린다.**
 
-### 수동 실행
+### 주 1회 루틴
 
 ```bash
-python scripts/daily_collect.py                     # 최근 30일 중 빈 날짜
-python scripts/daily_collect.py --days 90           # 최근 90일
-python scripts/daily_collect.py --start 20251224 --end 20260131
+python scripts/daily_collect.py --days 14        # 1) 수집 (두 leg + 고아 검사)
+python scripts/build_offset_histogram.py         # 2) 사전계산 (35초)
+python scripts/validate_data.py                  # 3) 품질 확인 (WARN 눈으로 볼 것)
+                                                 # 4) DB 전송·교체 → 4-3절
 ```
 
 아직 참여자 데이터가 없는 날짜만 골라 받으므로, 여러 번 돌려도 중복 수집되지 않는다.
 
-### 작업 스케줄러 등록
+**2~4 는 빼먹으면 안 된다.** 사전계산을 안 만들면 서버가 참여자 590만 행을
+실시간 스캔하고, 그러다 2026-08-28 에 VM 이 스래싱으로 멈췄다 (10절).
 
-PC 를 매일 켜지 않아도 되도록 "놓친 작업 따라잡기"를 쓴다.
+### 작업 스케줄러를 쓰지 않는 이유 (2026-09-10 결정)
 
-1. `작업 스케줄러` 실행 → **작업 만들기** (기본 작업 아님)
-2. **일반** 탭 — 이름 `gonggong 일별 수집`, "사용자가 로그온할 때만 실행" 유지
-3. **트리거** 탭 — 새로 만들기 → 매일 03:00
-4. **동작** 탭 — 새로 만들기
-   - 프로그램: `python`
-   - 인수: `scripts/daily_collect.py --headless`
-   - 시작 위치: `C:\Users\onebe\gonggong`
-5. **설정** 탭 — **"예약된 시작을 놓친 경우 가능한 한 빨리 작업 시작"** 체크 ← 핵심
-6. 확인
+자동화할 수 있는 건 1번뿐이고, 2~4 는 사람이 봐야 의미가 있다 —
+`validate_data.py` 의 WARN, 고아 증가, 253MB 업로드 타이밍은
+자동으로 돌려봐야 아무도 안 읽는다. 주 1회 수동이 실제로 더 안전하다.
 
-이 옵션 덕분에 PC 가 꺼져 있던 날의 작업은 다음에 켤 때 실행되고,
-그때 빈 날짜를 한꺼번에 메운다.
+옛 절차(매일 03:00 + "놓친 작업 따라잡기")는 git 이력에 있다.
 
-### 첫 실행 주의
+### `daily_collect.py` 는 두 leg 를 모두 돈다
 
-마지막 수집이 **2025-12-24** 라 공백이 길다. 한 번에 돌리면 오래 걸리므로
-첫 회는 기간을 나눠 수동으로 돌린 뒤 스케줄러에 맡긴다.
-
-```bash
-python scripts/daily_collect.py --start 20251224 --end 20260131
-python scripts/daily_collect.py --start 20260201 --end 20260331
-# ... 이어서
+```
+1. 목록 leg   공고 Excel   → bids_history       (collect_notices)
+2. 참여자 leg 참여자 Excel → bid_participants   (info21c_participants.run)
 ```
 
----
+**순서가 중요하다.** `update_bid_type_and_method()` 가 공고 행을 UPDATE 만 하고
+`if row:` 가드로 감싸여 있어서, 참여자를 먼저 넣으면 `bid_type` / `price_method`
+가 영영 빈 채로 남는다.
+
+> ⚠ **2026-05-31 ~ 09-10: 목록 leg 가 배선돼 있지 않았다.**
+> 참여자만 들어오고 공고가 안 들어와 조인에서 떨어지는 "고아 공고"가 누적됐다
+> (최대 401건). 에러가 0건이라 넉 달간 드러나지 않았다.
+> 지금은 실행 끝에 고아 수를 세고 **늘었으면 종료 코드 1** 로 죽는다.
+> 남은 고아 235건은 시기 특정이 안 돼(옛 로그 포맷) 미해결로 남아 있다.
+
+### 목록 Excel 은 현재 페이지만 내보낸다
+
+`pageSize=100` 으로 키워도 결과가 100건을 넘으면 나머지가 조용히 잘린다.
+`info21c_downloader.goto_next_page()` 가 페이지를 순회하며 페이지마다 파일을
+하나씩 만든다 (`_p2`, `_p3`, ...). **받은 파일을 전부 적재해야 한다.**
+
+실측 (실내건축 2026-08-29~09-09): 1페이지 100건 + 2페이지 23건 = 123건.
+페이지네이션 없이는 100건에서 끊겨 23건이 사라졌다.
 
 ## 10. 서버 사양 제약 — RAM 1GB
 

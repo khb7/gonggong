@@ -202,23 +202,35 @@ cd frontend && npx vitest run && npx tsc --noEmit
 
 ### 경로 A: Info21c 자동 다운로드 (주 경로, 구현 완료)
 
+**수집에는 leg 가 둘이고 둘 다 돌아야 한다.** 분포 엔진은 두 테이블을 조인해
+조회하므로 한쪽만 들어오면 그 공고는 엔진에 없는 것과 같다.
+
 ```
-scripts/info21c_downloader.py  ← Playwright 자동 다운로드 (구현됨, 셀렉터 검증 필요)
-scripts/etl_csv.py             ← 클린 CSV → DB 적재 (구현됨)
+scripts/info21c_downloader.py     목록 Excel   → (etl_csv) → bids_history
+scripts/info21c_participants.py   참여자 Excel →            bid_participants
+scripts/daily_collect.py          ← 위 둘을 순서대로 돌리는 진입점. 이걸 쓴다
 ```
 
-**실행 순서:**
+**주 1회 루틴:**
 ```bash
-# 1. 설치 (최초 1회)
-pip install playwright && playwright install chromium
-
-# 2. 다운로드 (--debug 로 첫 실행 권장)
-python scripts/info21c_downloader.py --start 20250101 --end 20251231 --debug
-
-# 3. DB 적재
-python scripts/etl_csv.py --file data/downloads/info21c_0002_20250101_20251231.csv
-python scripts/etl_csv.py --file data/downloads/info21c_0023_20250101_20251231.csv
+python scripts/daily_collect.py --days 14     # 수집 (두 leg + 고아 검사)
+python scripts/build_offset_histogram.py      # 사전계산 (35초) — 빼먹으면 서버가 멈춘다
+python scripts/validate_data.py               # WARN 눈으로 확인
+# → DB 를 서버로 전송·교체 (docs/deployment.md 4-3절)
 ```
+
+작업 스케줄러는 쓰지 않는다 — 자동화되는 건 1번뿐이고 나머지는 사람이 봐야 한다.
+
+기간을 직접 지정할 때는 `--start 20260101 --end 20260131`.
+최초 1회만 `pip install playwright && playwright install chromium`.
+
+**수집이 새는 두 가지 방식** (2026-05~09 에 넉 달간 실제로 샜다):
+
+- **목록 leg 누락** → 참여자만 들어와 `bids_history` 에 짝이 없는 *고아 공고*가 된다.
+  `update_bid_type_and_method()` 가 `if row:` 가드로 UPDATE 만 해서 에러가 안 난다.
+  `daily_collect.py` 가 실행 끝에 고아 수를 세고 **늘었으면 종료 코드 1** 로 죽는다.
+- **목록 100건 잘림** → 엑셀 내보내기가 현재 페이지만 내보낸다.
+  `goto_next_page()` 가 페이지를 순회하며 파일을 `_p2`, `_p3` 로 만드니 **전부 적재**할 것.
 
 Info21c 접속: `https://www.info21c.net/` / ID `nw8856` / PW `nw8856` (동시 접속 불가, 오전 주의)
 상세 계획: `md/plans/plan_info21c.md`
