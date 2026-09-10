@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Handoff — T-031 투찰가 계산기 요약에서 고정 사정률 내리기 — 2026-09-10
 
 ## 변경한 파일
@@ -50,7 +49,13 @@ curl -s localhost:8000/api/v1/bid/calculate -H 'content-type: application/json' 
   중심이 고정 사정률이라 의미가 애매하다 — 다음에 정리 대상.
 - 자동 수집이 멈춰 있다. `max(bid_date) = 2026-08-28` 로 이 시점 13일 공백.
   Windows 작업 스케줄러에 `daily_collect.py` 가 등록돼 있지 않다 (docs/deployment.md 9절).
-=======
+
+---
+---
+
+> 아래는 다른 세션에서 먼저 올라온 T-014 핸드오프다. 아직 eval 이 안 돌았을 수
+> 있어 버리지 않고 남긴다. 이번 T-031 과 파일은 겹치지만 기능은 겹치지 않는다.
+
 # Handoff — 내 위치 사정률 오차 밴드 (T-014) — 2026-09-01
 
 ## 배경
@@ -145,4 +150,3 @@ curl -s localhost:8000/api/v1/bid/calculate -H 'content-type: application/json' 
 - **`estimated_price`(기준 금액) 카드는 여전히 점 추정.** offset 밴드만 폭으로 바뀌었고
   금액은 사정률 1.0 가정값 하나만 보여준다.
 - **`/bid/calculate`(동결 경로)는 손대지 않았다.** 밴드는 분포 경로에만 있다.
->>>>>>> origin/main
