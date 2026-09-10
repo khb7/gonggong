@@ -38,9 +38,32 @@ class BidResponse(BaseModel):
     g2b_fetch_status: str = Field(..., description='"ok" | "failed" | "mock"')
     fetched: FetchedData
 
+    base_price: int = Field(
+        ...,
+        description=(
+            "계산에 실제로 쓴 기초금액(원). override 를 반영한 값이라 "
+            "`fetched.base_price`(원본 조회값)와 다를 수 있다"
+        ),
+    )
+
     strategy: str = Field(..., description='"safe" | "normal" | "aggressive"')
-    predicted_rate: float = Field(..., description="사정률 예측값 (Trimmed Median)")
-    mad_value: float = Field(..., description="MAD 값")
+    predicted_rate: float = Field(
+        ...,
+        description=(
+            "투찰가 계산에 쓴 사정률. 예측값이 아니라 전역 고정 상수다 (T-015). "
+            "분포의 중심이 아니라 하한가 미달을 피하기 위한 안전 여유값이다."
+        ),
+    )
+    contract_law: str = Field(
+        ...,
+        description=(
+            '발주처에서 판별한 적용 계약법. "national"(±2%) | "local"(±3%) '
+            '| "agency"(지방조달청 대행) | "unknown". 사정률 산포가 여기서 따라온다'
+        ),
+    )
+    mad_value: float = Field(
+        ..., description="사정률 MAD. 계약법별 실측값이라 공고마다 다르다"
+    )
     prediction_range: list[float] = Field(..., description="예측 구간 [lower, upper] = predicted_rate ± MAD")
     confidence_grade: str = Field(..., description='신뢰도 등급. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')
     fallback_level: str = Field(..., description='사용된 Fallback 레벨. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')

@@ -259,3 +259,57 @@ def test_calculate_g2b_fetch_status_is_mock(client):
             json={"bid_notice_id": "TEST-001"},
         )
     assert resp.json()["g2b_fetch_status"] == "mock"
+
+
+def test_calculate_scopes_mad_by_contract_law(client):
+    """사정률 산포는 발주처의 계약법에서 따라온다 — 공고마다 달라야 한다.
+
+    복수예비가격 생성범위가 규정으로 갈린다(국가 ±2% / 지방 ±3%). 그래서
+    사정률 산포는 추정 대상이 아니라 제도 파라미터다. 예전에는 전체 혼합값
+    0.004856(=unknown) 하나를 모든 공고에 썼는데, 그러면 화면에 뜨는 값이
+    공고와 무관하게 고정이라 근거가 없어 보인다.
+
+    분포 경로(`/bid/distribution`)는 이미 `contract_law.preprice_sd` 를 쓰고
+    있었다. 계산 경로만 뒤처져 있던 것을 맞춘다.
+    """
+    from app.engine import contract_law
+
+    def _call(**overrides):
+        body = {"bid_notice_id": "TEST-001"}
+        if overrides:
+            body["overrides"] = overrides
+        return client.post("/api/v1/bid/calculate", json=body).json()
+
+    # Mock 공고의 발주처는 "서울특별시" → 지방계약
+    local = _call()
+    assert local["contract_law"] == "local"
+    assert local["mad_value"] == pytest.approx(
+        float(contract_law.PREPRICE_MAD["local"])
+    )
+
+    # 발주처를 국가계약 쪽으로 덮어쓰면 산포도 같이 바뀐다
+    national = _call(client_name="국군재정관리단")
+    assert national["contract_law"] == "national"
+    assert national["mad_value"] == pytest.approx(
+        float(contract_law.PREPRICE_MAD["national"])
+    )
+
+    # 국가 ±2% 가 지방 ±3% 보다 좁다 — 생성범위가 좁으니 당연하다
+    assert national["mad_value"] < local["mad_value"]
+
+    # 사정률 자체는 여전히 고정이다. 바뀌는 건 산포뿐이다.
+    assert national["predicted_rate"] == local["predicted_rate"]
+
+
+def test_calculate_unknown_client_falls_back_to_widest_mad(client):
+    """발주처를 모르면 전체 혼합값을 쓴다 — 좁게 잡으면 확신을 과장한다."""
+    from app.engine import contract_law
+
+    data = client.post(
+        "/api/v1/bid/calculate",
+        json={"bid_notice_id": "TEST-001", "overrides": {"client_name": "???"}},
+    ).json()
+    assert data["contract_law"] == "unknown"
+    assert data["mad_value"] == pytest.approx(
+        float(contract_law.PREPRICE_MAD["unknown"])
+    )

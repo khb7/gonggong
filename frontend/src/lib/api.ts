@@ -31,10 +31,20 @@ export interface BidResult {
     lower_limit_rate: number;
     participants: number;
   };
+  /** 계산에 실제로 쓴 기초금액(원). override 반영값이라 fetched.base_price 와 다를 수 있다 */
+  base_price: number;
   strategy: "safe" | "normal" | "aggressive";
+  /**
+   * 투찰가 계산에 쓴 사정률. 예측이 아니라 전역 고정 상수(100.15%)다 — T-015.
+   * **분포의 중심이 아니다.** 하한가 미달을 피하려고 위로 올려 잡은 안전 여유값이라,
+   * 이 값을 중심으로 예정가격 범위를 그리면 안 된다. 중심은 1.0 이다.
+   */
   predicted_rate: number;
+  /** 발주처에서 판별한 계약법. 사정률 산포가 여기서 따라온다 */
+  contract_law: "national" | "local" | "agency" | "unknown";
+  /** 사정률 MAD. 계약법별 실측값이라 공고마다 다르다 */
   mad_value: number;
-  /** [lower, upper] = predicted_rate ± MAD */
+  /** [lower, upper] = predicted_rate ± MAD. 중심이 고정 사정률이라 표시용으로는 쓰지 않는다 */
   prediction_range: [number, number];
   confidence_grade: "high" | "medium" | "low";
   fallback_level: string;

@@ -31,6 +31,18 @@ const LABEL_MAP: Record<string, string> = {
   Safe: "낙찰하한가 타점",
 };
 
+/**
+ * 계약법 라벨. 복수예비가격 생성범위가 규정으로 갈리므로(국가 ±2% / 지방 ±3%)
+ * 사정률 산포가 여기서 따라온다. 분포 화면(BidDistribution)과 같은 문구를 쓴다 —
+ * 두 화면이 같은 개념을 다르게 부르면 다른 값처럼 읽힌다.
+ */
+const LAW_LABEL: Record<string, string> = {
+  national: "국가계약 ±2%",
+  local: "지방계약 ±3%",
+  agency: "지방조달청 대행",
+  unknown: "구분 불명",
+};
+
 const STRATEGY_TO_LABEL: Record<string, string> = {
   aggressive: "Aggressive",
   normal: "Normal",
@@ -250,36 +262,46 @@ export default function BidCalculator() {
           <Card className="bg-muted">
             <CardContent className="p-4 space-y-2">
               {/*
-                사정률은 **예측하지 않는다.** 복수예비가격 15개 중 4개 추첨의
-                산술평균이라 제도가 만드는 난수이고, 자사 투찰 151건 실측에서
-                예측이 무예측보다 1.58배 나빴다 (RMSE 0.994%p vs 0.630%p,
-                예측력 상관 r=+0.093 p=0.255). 그래서 고정값을 쓴다.
-                예전 UI 는 "예측 사정률 / 근거 / 신뢰도 / 전략" 을 보여줬는데,
-                예측을 끈 뒤로는 "근거: 데이터 없음" 처럼 오해를 부르는 잔재였다.
+                이 자리에는 "적용 사정률: 100.15% · 고정값" 이 있었다. 어떤 공고를
+                넣어도 같은 숫자가 떠서, 근거가 있는 값인데도 계산을 안 한 것처럼
+                읽혔다. 그래서 요약에는 **공고마다 실제로 달라지는 값**만 둔다 —
+                예정가격이 개찰 때 어디서 정해지는지의 범위와, 그 폭을 정하는 계약법.
+
+                범위의 중심은 1.0 이다. 고정 사정률 100.15% 가 **아니다.**
+                100.15 는 분포의 중심이 아니라 하한가 미달을 피하려고 위로 올려 잡은
+                안전 여유값이라, 그걸 중심으로 그리면 예정가격을 0.15%p 높게 오해한다.
+                실측 중심은 국가 1.00057 / 지방 0.99874 로 둘 다 1.0 근처다.
+                그래서 응답의 `prediction_range`(= 고정값 ± MAD)는 쓰지 않는다.
               */}
-              <div className="flex flex-wrap gap-4 text-sm items-center">
+              <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm items-center">
                 <div>
-                  <span className="text-muted-foreground">적용 사정률: </span>
-                  <span className="font-medium">{(result.predicted_rate * 100).toFixed(2)}%</span>
-                  <span className="text-muted-foreground ml-1.5 text-xs">고정값 · 예측 아님</span>
+                  <span className="text-muted-foreground">예정가격 추정: </span>
+                  <span className="font-medium tabular-nums">
+                    {formatNumber(Math.round(result.base_price * (1 - result.mad_value)))}원 ~{" "}
+                    {formatNumber(Math.round(result.base_price * (1 + result.mad_value)))}원
+                  </span>
                 </div>
-                {result.prediction_range && (
-                  <div>
-                    <span className="text-muted-foreground">제도 산포: </span>
-                    <span className="font-mono text-xs">
-                      {(result.prediction_range[0] * 100).toFixed(2)}% ~{" "}
-                      {(result.prediction_range[1] * 100).toFixed(2)}%
-                    </span>
-                  </div>
-                )}
+                <div>
+                  <span className="text-muted-foreground">사정률 산포: </span>
+                  <span className="font-mono text-xs">
+                    ±{(result.mad_value * 100).toFixed(2)}%p
+                  </span>
+                  <span className="text-muted-foreground ml-1.5 text-xs">
+                    {LAW_LABEL[result.contract_law] ?? "구분 불명"}
+                  </span>
+                </div>
               </div>
 
               <p className="text-xs text-muted-foreground border-t pt-2">
-                사정률은 개찰 시 추첨으로 정해진다 — 맞히는 값이 아니다.
-                과거 투찰 기록 분석에서 <span className="font-medium">사정률을 예측하면 예측하지 않을 때보다
-                오차가 커졌고</span>, 그래서 실제 사정률 분포 중앙값 바로 위인{" "}
-                <span className="font-mono">{(result.predicted_rate * 100).toFixed(2)}%</span> 를 고정으로 쓴다.
-                위 구간은 제도가 만드는 산포이지 보장 범위가 아니다.
+                위 범위는 <span className="font-medium">제도가 만드는 산포</span>다.
+                복수예비가격 15개 중 4개의 평균이 예정가격이라 개찰 전에는 좁힐 방법이 없고,
+                생성범위가 국가계약 ±2% / 지방계약 ±3% 로 규정에 박혀 있어 발주처만 보면 폭이 정해진다.
+                <br />
+                사정률은 개찰 시 추첨으로 정해진다 — 맞히는 값이 아니다. 과거 투찰 기록에서{" "}
+                <span className="font-medium">사정률을 예측하면 예측하지 않을 때보다 오차가 커졌다.</span>{" "}
+                그래서 아래 투찰가는 예측 대신 고정 기준{" "}
+                <span className="font-mono">{(result.predicted_rate * 100).toFixed(2)}%</span>
+                {" "}로 계산했다. 하한가 미달을 피하려 위로 올려 잡은 안전 여유값이지 예정가격 전망이 아니다.
               </p>
             </CardContent>
           </Card>

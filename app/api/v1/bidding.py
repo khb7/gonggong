@@ -16,6 +16,7 @@ from app.db.crud import TARGET_BID_TYPE
 from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type, normalize_bid_type
 from app.db.models import ProjectBucket
+from app.engine import contract_law
 from app.engine.statistics import confidence_range
 from app.engine.calculator import calculate_bid_spread
 from app.schemas.request import BidRequest
@@ -48,10 +49,19 @@ router = APIRouter()
 #   자사 투찰이 국군재정관리단(평균 1.00287) 등에 몰려 있어 생긴 차이이며,
 #   발주처별로 가르는 것은 T-020 이다(근거 부족으로 보류).
 #
-# PREPRICE_MAD: 남은 불확실성. 어떤 방법으로도 줄일 수 없는 제도적 산포다.
-#   bids_history.preprice_rate 12,010건 실측 MAD (sd 는 0.007059).
+#   ⚠ 이 값을 데이터가 늘 때마다 다시 맞추지 말 것. 봉우리가 평평하다.
+#     전체 DB 15,091 공고 스윕(2026-09-10)에서 인접 후보끼리 낙찰 건수가
+#     402 → 418 → 439 → 393 으로 튄다. 매끄러운 봉우리가 아니라 잡음이다.
+#     물량의 72%인 지방계약은 99.50~100.20% 전 구간이 √N 안에서 구분되지 않는다.
+#     argmax 를 쫓아 상수를 옮기면 잡음의 궤적을 그대로 베끼게 된다.
+#     재조정 조건은 표본 증가가 아니다 — 자사 투찰이 300건대가 되거나,
+#     주력 발주처 구성이 바뀌거나, 복수예가 생성범위 규정이 개정될 때다.
+#     재현: `python scripts/backtest_bid_rate.py --by-law`
+#
+# 남은 불확실성(사정률 산포)은 여기 상수로 두지 않는다. 복수예비가격 생성범위가
+# 국가 ±2% / 지방 ±3% 로 규정이 갈리므로 발주처마다 다르다.
+# → `app/engine/contract_law.py::preprice_mad()` 참조.
 FIXED_PREPRICE_RATE = Decimal("1.0015")
-PREPRICE_MAD = Decimal("0.004856")
 
 
 def _get_fetcher():
@@ -182,10 +192,20 @@ async def calculate_bid(
     # 예정가격이 13.1% 낮게 추정되고 있었다(10억 공고에서 1.16억). 같이 제거한다.
     # 진짜 사정률은 `bids_history.preprice_rate` 다 (중앙 0.999332).
     predicted_rate = FIXED_PREPRICE_RATE
-    mad_val = PREPRICE_MAD
     fallback_level = "fixed"
 
-    # ── 5. 구간 및 신뢰도 등급 ──────────────────────────
+    # ── 5. 사정률 산포 = 계약법에서 연역 (공고마다 다르다) ─
+    # 사정률 자체는 고정이지만 그 **산포**는 공고마다 다르다. 복수예비가격
+    # 생성범위가 규정으로 갈리기 때문이다 — 국가 ±2%, 지방 ±3%.
+    # 강민석·류문찬(2015)의 이론 sd(0.513% / 0.767%)를 DB 12,010건 실측이
+    # 재현한다(0.549% / 0.744%). 추정이 아니라 제도 파라미터다.
+    #
+    # 분포 경로는 진작 `contract_law` 를 쓰고 있었고 계산 경로만 전체 혼합값
+    # 하나를 모든 공고에 쓰고 있었다. 그래서 화면에 뜨는 산포가 공고와 무관하게
+    # 고정이었다 — 근거가 있는데도 없어 보였다.
+    law = contract_law.classify(client_name)
+    mad_val = contract_law.preprice_mad(client_name)
+
     # 고정값이므로 등급은 항상 같다. 남은 불확실성은 제도가 만드는
     # 사정률 자체의 산포이고, 그건 어떤 방법으로도 줄일 수 없다.
     rate_lower, rate_upper = confidence_range(predicted_rate, mad_val)
@@ -221,8 +241,10 @@ async def calculate_bid(
             ),
             participants=notice.participants,
         ),
+        base_price=base_price,
         strategy=result["strategy"],
         predicted_rate=float(predicted_rate),
+        contract_law=law,
         mad_value=float(mad_val),
         prediction_range=[float(rate_lower), float(rate_upper)],
         confidence_grade=confidence_grade,
