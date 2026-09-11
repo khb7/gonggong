@@ -608,20 +608,14 @@ export default function BidDistribution() {
                   */}
                   {tradeoff && (
                     <div className="mt-2.5 pt-2.5 border-t border-primary/20">
-                      <p className="text-xs font-semibold mb-1">이 금액을 넣으면 어떻게 되나</p>
-                      <p className="text-[11px] text-muted-foreground leading-relaxed">
-                        투찰할 때는 예정가격을 모릅니다. 개찰에서 예정가격이 뽑히는 순간
-                        내 자리가 통째로 밀리는데, 그 폭이{" "}
-                        <span className="font-mono font-semibold text-foreground">
-                          ±{tradeoff.landing_sd_pct.toFixed(2)}%p
-                        </span>{" "}
-                        입니다 ({LAW_LABEL[result.contract_law] ?? "구분 불명"} 사정률 산포 기준).
-                        하한선 아래로 밀리면 등수와 상관없이{" "}
-                        <span className="font-semibold text-rose-600 dark:text-rose-400">무효</span>
-                        {" "}— 하한가 미달로 그냥 탈락입니다.
-                      </p>
+                      {/*
+                        설명 문단을 두지 않는다. 예정가격이 흔들린다는 말은 이 화면에서
+                        이미 세 번 나온다 — 추천가 경고줄, 내 위치 밴드 설명, 밴드폭 대
+                        집중구간 비교. 네 번째를 여기 두면 표가 안 읽힌다.
+                      */}
+                      <p className="text-xs font-semibold mb-1.5">조준 위치 비교</p>
 
-                      <div className="overflow-x-auto mt-2">
+                      <div className="overflow-x-auto">
                         <table className="w-full text-[11px] tabular-nums">
                           <thead>
                             <tr className="text-muted-foreground border-b border-primary/20">
@@ -663,27 +657,19 @@ export default function BidDistribution() {
                         </table>
                       </div>
 
-                      <div className="text-[10px] text-muted-foreground mt-2 space-y-1 leading-relaxed">
-                        <p>
-                          <span className="font-semibold text-foreground">무효 확률</span> — 개찰에서
-                          내 금액이 하한선 아래로 밀릴 확률입니다. 무효면 낙찰 후보에도 못 듭니다.
-                        </p>
-                        <p>
-                          <span className="font-semibold text-foreground">기대 낙찰</span> — 무효까지
-                          이미 반영한 값입니다. "이 자리에 100번 넣으면 몇 번 낙찰됐겠는가" 를
-                          과거 분포로 계산한 것이고, 무효는 0회로 셉니다.
-                        </p>
-                        <p>
-                          위로 올리면 무효는 확 줄지만 기대 낙찰도 같이 줄어듭니다.
-                          <span className="font-semibold text-foreground"> 무효를 피하는 건 공짜가 아닙니다.</span>
-                          {" "}과거 참여의{" "}
-                          <span className="font-semibold text-foreground">
-                            {tradeoff.market_invalid_pct.toFixed(0)}%
-                          </span>
-                          가 하한 미달이었습니다 — 무효는 사고가 아니라 이 시장의 정상 비용이고,
-                          낙찰자 대부분은 하한선에 붙여 넣고 사정률 운을 받은 사람들입니다.
-                        </p>
-                      </div>
+                      {/*
+                        용어 두 개만 짚고 끝낸다. 무효·기대낙찰이 무슨 뜻인지는 표에서
+                        읽히지 않지만, 그 이상은 표가 이미 보여준다 — 위로 올리면
+                        무효가 줄고 기대 낙찰도 준다는 것은 숫자 네 줄로 충분하다.
+                      */}
+                      <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
+                        무효 = 개찰에서 하한선 아래로 밀릴 확률. 기대 낙찰은 무효를 0회로
+                        세어 이미 반영한 값입니다. 과거 참여의{" "}
+                        <span className="font-semibold text-foreground">
+                          {tradeoff.market_invalid_pct.toFixed(0)}%
+                        </span>
+                        가 하한 미달이었습니다.
+                      </p>
                     </div>
                   )}
                 </div>
