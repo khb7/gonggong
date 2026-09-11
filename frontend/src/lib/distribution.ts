@@ -580,6 +580,53 @@ export function findBestWinRateBin(
   };
 }
 
+export interface RankedBin {
+  /** offset (%) */
+  offset_pct: number;
+  /** 과거 낙찰 빈도 (%) */
+  historical_win_rate: number;
+  /** 낙찰 건수 */
+  win_count: number;
+  /** 낙찰 빈도에서 역산한 참여 건수 */
+  sample_count: number;
+}
+
+/**
+ * 낙찰 빈도가 높은 순으로 후보 칸을 돌려준다.
+ *
+ * **추천 자리가 왜 거기인지 보여주기 위한 것이다.** "0.0%" 하나만 띄우면
+ * 어디서 나온 숫자인지 알 수 없고, 문장으로 설명하면 길어지기만 한다.
+ * 2·3위와 나란히 놓으면 고른 이유가 숫자에서 바로 읽힌다.
+ *
+ * 정렬·필터 규칙은 `findBestWinRateBin` 과 **같아야 한다** — 다르면 화면에
+ * "추천 0.0%" 인데 근거표 1위는 다른 칸이 되어 서로를 부정한다.
+ * 그래서 1위는 항상 추천 자리와 같다(테스트로 고정).
+ */
+export function rankWinRateBins(bins: OffsetBucket[], limit: number): RankedBin[] {
+  return bins
+    .filter(
+      (b) =>
+        b.historical_win_rate !== null &&
+        b.historical_win_rate > 0 &&
+        // 낙찰 1건짜리 칸은 빈도가 100% 로 찍히기도 한다 — 꼬리 노이즈
+        b.win_count >= MIN_WIN_SAMPLE,
+    )
+    .sort(
+      (a, b) =>
+        b.historical_win_rate! - a.historical_win_rate! ||
+        // 동률이면 offset 이 높은 쪽 — 같은 확률이면 비싸게 받는 게 낫다
+        b.offset_pct - a.offset_pct,
+    )
+    .slice(0, limit)
+    .map((b) => ({
+      offset_pct: b.offset_pct,
+      historical_win_rate: b.historical_win_rate!,
+      win_count: b.win_count,
+      // bin.count 는 필터된 표본이라 쓸 수 없다. 빈도의 분모를 되돌린다.
+      sample_count: Math.round(b.win_count / (b.historical_win_rate! / 100)),
+    }));
+}
+
 // ── 무효율 ↔ 기대 낙찰 교환 ─────────────────────────────────────────────
 
 /**

@@ -14,6 +14,7 @@ import {
   computeMyOffsetPct,
   findWinZone,
   findBestWinRateBin,
+  rankWinRateBins,
   buildOffsetTradeoff,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
@@ -40,6 +41,13 @@ const LAW_LABEL: Record<string, string> = {
   agency: "지방조달청 대행",
   unknown: "구분 불명",
 };
+
+// 추천 근거표에 보여줄 후보 수. 1·2·3위면 "왜 1위인가" 가 드러나고,
+// 더 늘리면 근거가 아니라 또 하나의 표가 된다.
+const CANDIDATE_ROWS = 3;
+
+// distribution.ts::MIN_WIN_SAMPLE 과 같은 값. 후보 조건을 화면에 밝히기 위해 둔다.
+const MIN_WIN_SAMPLE_UI = 5;
 
 // ── 커스텀 툴팁 ──────────────────────────────────────────────────────────
 
@@ -224,6 +232,13 @@ export default function BidDistribution() {
       result.a_value,
     );
   }, [result, prepared]);
+
+  // 추천 자리의 근거. 1위가 곧 추천 자리이므로 2·3위와 나란히 놓으면
+  // 왜 거기를 골랐는지 숫자에서 바로 읽힌다.
+  const candidates = useMemo(
+    () => rankWinRateBins(prepared.bins, CANDIDATE_ROWS),
+    [prepared],
+  );
 
   // 조준 위치를 올렸을 때 무효율과 기대 낙찰이 어떻게 교환되는지.
   // 사정률 산포를 모르면(계약법 불명) null 이고, 그때는 표를 그리지 않는다.
@@ -658,18 +673,46 @@ export default function BidDistribution() {
                       </div>
 
                       {/*
-                        용어 두 개만 짚고 끝낸다. 무효·기대낙찰이 무슨 뜻인지는 표에서
-                        읽히지 않지만, 그 이상은 표가 이미 보여준다 — 위로 올리면
-                        무효가 줄고 기대 낙찰도 준다는 것은 숫자 네 줄로 충분하다.
+                        무효 확률이 무엇인지는 설명하지 않는다 — 쓰는 사람이 이미 안다.
+                        대신 추천 자리가 어떻게 정해졌는지를 여기서 보인다.
+                        "0.0%" 하나만 띄우면 어디서 나온 숫자인지 알 수 없고,
+                        문장으로 풀면 길어지기만 한다. 2·3위와 나란히 놓으면
+                        고른 이유가 숫자에서 바로 읽힌다.
                       */}
-                      <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
-                        무효 = 개찰에서 하한선 아래로 밀릴 확률. 기대 낙찰은 무효를 0회로
-                        세어 이미 반영한 값입니다. 과거 참여의{" "}
-                        <span className="font-semibold text-foreground">
-                          {tradeoff.market_invalid_pct.toFixed(0)}%
-                        </span>
-                        가 하한 미달이었습니다.
-                      </p>
+                      {candidates.length > 1 && (
+                        <div className="mt-3 pt-2 border-t border-primary/20">
+                          <p className="text-[10px] text-muted-foreground mb-1">
+                            추천 자리는 <span className="font-semibold text-foreground">과거 낙찰이
+                            가장 잦았던 칸</span>입니다 (낙찰 {MIN_WIN_SAMPLE_UI}건 이상인 칸만 후보)
+                          </p>
+                          <table className="w-full text-[10px] tabular-nums">
+                            <tbody>
+                              {candidates.map((c, i) => (
+                                <tr key={c.offset_pct} className="text-muted-foreground">
+                                  <td className="py-0.5 font-mono w-14">
+                                    {c.offset_pct > 0 ? "+" : ""}
+                                    {c.offset_pct.toFixed(1)}%p
+                                  </td>
+                                  <td
+                                    className={`py-0.5 text-right font-mono ${
+                                      i === 0 ? "font-semibold text-foreground" : ""
+                                    }`}
+                                  >
+                                    {c.historical_win_rate.toFixed(2)}%
+                                  </td>
+                                  <td className="py-0.5 text-right font-mono">
+                                    낙찰 {formatNumber(c.win_count)} / 참여{" "}
+                                    {formatNumber(c.sample_count)}
+                                  </td>
+                                  <td className="py-0.5 pl-2 w-10 text-primary">
+                                    {i === 0 ? "← 선택" : ""}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

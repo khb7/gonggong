@@ -3,6 +3,7 @@ import {
   prepareDistribution,
   computeLocalPosition,
   computeOffsetBand,
+  rankWinRateBins,
   computeMyOffsetPct,
   findBestWinRateBin,
   landingSdPct,
@@ -715,5 +716,65 @@ describe("buildOffsetTradeoff", () => {
   it("착지 산포를 함께 돌려준다", () => {
     const r = buildOffsetTradeoff(bins, basePrice, llr, 0, 0.744, 0)!;
     expect(r.landing_sd_pct).toBeCloseTo(0.744 * llr, 3);
+  });
+});
+
+// ── 추천 근거 (후보 비교) ────────────────────────────────────────────────
+
+describe("rankWinRateBins", () => {
+  const bin = (offset: number, winRate: number, wins: number): OffsetBucket => ({
+    offset_pct: offset,
+    count: 0,
+    win_count: wins,
+    historical_win_rate: winRate,
+  });
+
+  it("낙찰 빈도가 높은 순으로 정렬한다", () => {
+    const ranked = rankWinRateBins(
+      [bin(0.3, 1.2, 20), bin(0.0, 4.2, 50), bin(-0.1, 2.9, 30)],
+      3,
+    );
+
+    expect(ranked.map((r) => r.offset_pct)).toEqual([0.0, -0.1, 0.3]);
+  });
+
+  it("첫 줄이 추천 자리다 — findBestWinRateBin 과 같은 칸을 골라야 한다", () => {
+    // 두 함수가 다른 칸을 고르면 화면에서 "추천 0.0%" 인데 근거표 1위는
+    // 다른 칸이 되어 서로를 부정한다.
+    const bins = [bin(0.3, 1.2, 20), bin(0.0, 4.2, 50), bin(-0.1, 2.9, 30)];
+
+    const best = findBestWinRateBin(bins, 800_000_000, 0.89745);
+    expect(rankWinRateBins(bins, 3)[0].offset_pct).toBe(best!.offset_pct);
+  });
+
+  it("낙찰 표본이 5건 미만인 칸은 후보에서 뺀다", () => {
+    // 꼬리 노이즈. 낙찰 1건짜리 칸은 빈도가 100% 로 찍히기도 한다.
+    const ranked = rankWinRateBins([bin(0.0, 4.2, 50), bin(2.0, 99.0, 1)], 5);
+
+    expect(ranked.map((r) => r.offset_pct)).toEqual([0.0]);
+  });
+
+  it("동률이면 offset 이 높은 쪽이 앞선다 — 같은 확률이면 비싸게 받는 게 낫다", () => {
+    const ranked = rankWinRateBins([bin(0.0, 3.0, 20), bin(0.4, 3.0, 20)], 2);
+
+    expect(ranked[0].offset_pct).toBe(0.4);
+  });
+
+  it("참여 건수를 낙찰 빈도에서 역산한다", () => {
+    // bin.count 는 필터된 표본이라 쓸 수 없다. 낙찰 빈도의 분모를 되돌린다.
+    const ranked = rankWinRateBins([bin(0.0, 4.0, 40)], 1);
+
+    expect(ranked[0].sample_count).toBe(1000);   // 40 / 0.04
+  });
+
+  it("limit 만큼만 돌려준다", () => {
+    const bins = [bin(0, 5, 10), bin(0.1, 4, 10), bin(0.2, 3, 10), bin(0.3, 2, 10)];
+
+    expect(rankWinRateBins(bins, 2)).toHaveLength(2);
+  });
+
+  it("후보가 없으면 빈 배열 — 지어내지 않는다", () => {
+    expect(rankWinRateBins([], 3)).toEqual([]);
+    expect(rankWinRateBins([bin(0, 99, 1)], 3)).toEqual([]);
   });
 });
