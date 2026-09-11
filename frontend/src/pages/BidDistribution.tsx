@@ -735,15 +735,23 @@ export default function BidDistribution() {
                       <span className="font-bold text-emerald-700 dark:text-emerald-400">{zoneRate.multiple.toFixed(1)}배</span>
                     </p>
                   )}
-                  <p className="text-[10px] text-muted-foreground pt-0.5 border-t border-emerald-500/20">
-                    과거 낙찰이 몰린 위치일 뿐 낙찰 확률이 아닙니다. 예정가격은 개찰 시 추첨으로 정해집니다.
-                    {winZone.totalWins < WIN_ZONE_MIN_SAMPLE && (
-                      <span className="text-amber-600 dark:text-amber-500 font-medium">
-                        {" "}표본 낙찰 {winZone.totalWins}건 — 참고용으로만 보세요.
-                      </span>
-                    )}
-                    {winRateIsBroader(result.data_quality) && " 낙찰 위치는 전체 표본 기준입니다."}
-                  </p>
+                  {/*
+                    "낙찰 확률이 아니라 과거 위치다" 같은 설명은 두지 않는다 —
+                    쓰는 사람이 이미 안다. 대신 **이 숫자를 어디까지 믿을지**를
+                    가르는 단서만 남긴다. 표본이 얇은 것과 다른 표본에서 온 것은
+                    화면만 봐서는 알 수 없으므로 그것만 밝힌다.
+                  */}
+                  {(winZone.totalWins < WIN_ZONE_MIN_SAMPLE ||
+                    winRateIsBroader(result.data_quality)) && (
+                    <p className="text-[10px] text-muted-foreground pt-0.5 border-t border-emerald-500/20">
+                      {winZone.totalWins < WIN_ZONE_MIN_SAMPLE && (
+                        <span className="text-amber-600 dark:text-amber-500 font-medium">
+                          표본 낙찰 {winZone.totalWins}건 — 참고용으로만 보세요.
+                        </span>
+                      )}
+                      {winRateIsBroader(result.data_quality) && " 낙찰 위치는 전체 표본 기준입니다."}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="text-[11px] text-muted-foreground text-center mt-3">
@@ -754,15 +762,18 @@ export default function BidDistribution() {
               <p className="text-[11px] text-muted-foreground text-center mt-2">
                 offset = 투찰율 − 낙찰하한율 (낙찰하한율 기준 상대 위치)
               </p>
+              {/*
+                밴드가 왜 생기는지는 설명하지 않는다 — 차트 범례에 이미
+                "사정률 오차 범위 (±1σ)" 가 붙어 있고, 쓰는 사람이 아는 내용이다.
+                여기서는 그 폭이 실제로 얼마인지 숫자만 준다.
+              */}
               {bandLabels && myLocalPos && (
                 <p className="text-[11px] text-muted-foreground text-center mt-1">
-                  내 위치는 점이 아니라 폭입니다 —{" "}
+                  내 위치{" "}
                   <span className="font-mono text-rose-600 dark:text-rose-400">
                     {myLocalPos.offsetLowPct!.toFixed(1)}% ~ {myLocalPos.offsetHighPct!.toFixed(1)}%
                   </span>
-                  . 과거 막대는 개찰로 확정된 예정가격 기준인데, 내 투찰가는 개찰 전이라
-                  기초금액으로 대신 쟀습니다. 실제 위치는 사정률에 따라 이 폭 안에서 움직입니다
-                  (사정률 σ={((result.rate_sigma ?? 0) * 100).toFixed(2)}% 기준 ±1σ).
+                  {" "}(사정률 σ={((result.rate_sigma ?? 0) * 100).toFixed(2)}% 기준 ±1σ)
                 </p>
               )}
               {prepared.excludedCount > 0 && (

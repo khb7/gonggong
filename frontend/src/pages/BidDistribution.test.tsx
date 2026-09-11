@@ -129,8 +129,12 @@ describe("BidDistribution", () => {
     expect(screen.getByText("-0.8% ~ -0.6%")).toBeInTheDocument();
     expect(screen.getByText(/낙찰 25건 \/ 전체 41건/)).toBeInTheDocument();
     expect(screen.getByText("9.4배")).toBeInTheDocument();
-    // 확률로 오독되지 않도록 하는 문구
-    expect(screen.getByText(/낙찰 확률이 아닙니다/)).toBeInTheDocument();
+    // "낙찰 확률이 아니라 과거 위치다" 라는 설명 문구는 두지 않는다 —
+    // 쓰는 사람이 이미 아는 내용이라 자리만 차지했다. 표본이 충분하고
+    // 같은 표본에서 나온 숫자면 각주 자체가 뜨지 않아야 한다.
+    expect(screen.queryByText(/낙찰 확률이 아닙니다/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/참고용으로만/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/전체 표본 기준/)).not.toBeInTheDocument();
   });
 
   it("막대와 낙찰 표본이 다르면 배수 비교를 숨긴다", async () => {
