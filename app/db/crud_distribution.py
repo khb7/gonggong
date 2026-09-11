@@ -4,6 +4,7 @@ distribution engine용 DB 조회.
 """
 
 from dataclasses import dataclass
+import math
 from decimal import Decimal
 
 from sqlalchemy import select, func, or_, exists, case
@@ -46,7 +47,7 @@ _GLOBAL_SCOPE_KEY = "global"
 # 실측 18,409건: 조달청 σ=0.0070 / 지자체 σ=0.0075 / 전체 σ=0.0072.
 # 차이가 σ 자체의 5% 수준이라 기관별로 나누지 않고 전체 표본으로 계산한다.
 
-_SIGMA_CACHE_KEY = "adjustment_rate_sigma"
+_SIGMA_CACHE_KEY = "preprice_rate_sigma"
 
 # σ 계산에 요구하는 최소 표본 수
 _MIN_SIGMA_SAMPLE = 100
@@ -529,7 +530,7 @@ async def get_avg_participants(
     return result or 0
 
 
-async def get_adjustment_rate_sigma(db: AsyncSession) -> Decimal | None:
+async def get_preprice_rate_sigma(db: AsyncSession) -> Decimal | None:
     """
     사정률의 표준편차 σ 를 반환한다. 내 위치 오차 밴드의 폭이 되는 값이다.
 
@@ -537,33 +538,64 @@ async def get_adjustment_rate_sigma(db: AsyncSession) -> Decimal | None:
     (_SIGMA_MAX 초과) None 을 반환한다. 이 경우 밴드를 그리지 않는다 —
     근거 없는 폭을 그리느니 안 그리는 편이 낫다.
 
+    ⚠ **컬럼은 `preprice_rate`(예정가격/기초금액, 중앙 0.999)다.**
+      `adjustment_rate` 는 낙찰가/기초금액(중앙 0.883)이고 사정률이 아니다.
+      예전에는 그쪽을 쓰고 있었고, 두 가지가 겹쳐 틀렸다:
+
+        - 낙찰률의 산포가 사정률보다 3.3배 넓다 (0.0235 vs 0.0071)
+        - 유효범위 0.90~1.10 은 사정률용이라, 중앙 0.883 인 낙찰률은
+          윗꼬리만 남았다 (표본 3,182건 = 전체의 19.5%, 평균 0.908)
+
+      T-015 에서 `bidding.py` 의 같은 실수를 걷어냈는데 여기 하나 남아 있었다.
+
+    ⚠ **`stddev_samp` 를 쓰지 않는다 — Postgres 전용이다.**
+      운영 DB 가 SQLite 라 `no such function` 으로 죽었고, 호출부가
+      try/except 로 감싸고 있어 에러가 삼켜졌다. 그래서 **밴드가 운영에서
+      한 번도 뜬 적이 없다** (rate_sigma 가 항상 None). 합·제곱합만 SQL 에서
+      집계하고 제곱근은 파이썬에서 취한다 — 양쪽 DB 에서 같은 SQL 이 돈다.
+      행을 파이썬으로 끌어오지 않으므로 RAM 1GB 제약도 지킨다.
+
     Returns:
-        σ (Decimal, 소수 단위. 예: Decimal("0.0072")) 또는 None
+        σ (Decimal, 소수 단위. 예: Decimal("0.0071")) 또는 None
     """
     cached = distribution_cache.get(_SIGMA_CACHE_KEY)
     if cached is not None:
         # None 결과도 캐시해야 매 요청마다 재조회하지 않는다 → 1-튜플로 감싼다.
         return cached[0]
 
+    rate = BidsHistory.preprice_rate
     q = (
         select(
-            func.stddev_samp(BidsHistory.adjustment_rate).label("sigma"),
             func.count().label("cnt"),
+            func.avg(rate).label("mean"),
+            func.avg(rate * rate).label("mean_sq"),
         )
         .select_from(BidsHistory)
         .where(
             *_target_filters(),
-            BidsHistory.adjustment_rate >= _SIGMA_RATE_MIN,
-            BidsHistory.adjustment_rate <= _SIGMA_RATE_MAX,
+            rate.is_not(None),
+            rate >= _SIGMA_RATE_MIN,
+            rate <= _SIGMA_RATE_MAX,
         )
     )
     row = (await db.execute(q)).one()
 
     sigma: Decimal | None = None
-    if row.cnt is not None and row.cnt >= _MIN_SIGMA_SAMPLE and row.sigma is not None:
-        candidate = Decimal(str(row.sigma))
-        if Decimal(0) < candidate <= _SIGMA_MAX:
-            sigma = candidate
+    if (
+        row.cnt is not None
+        and row.cnt >= _MIN_SIGMA_SAMPLE
+        and row.mean is not None
+        and row.mean_sq is not None
+    ):
+        n = int(row.cnt)
+        mean = float(row.mean)
+        var_pop = float(row.mean_sq) - mean * mean
+        # 부동소수점 잔차로 −1e-17 같은 값이 나올 수 있다.
+        if var_pop > 0:
+            var_samp = var_pop * n / (n - 1)      # 표본분산 보정
+            candidate = Decimal(str(math.sqrt(var_samp)))
+            if Decimal(0) < candidate <= _SIGMA_MAX:
+                sigma = candidate
 
     distribution_cache.set(_SIGMA_CACHE_KEY, (sigma,))
     return sigma

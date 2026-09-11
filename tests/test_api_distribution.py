@@ -62,7 +62,7 @@ def _dist(
             return_value=global_rows if global_rows is not None else rows
         ),
         "get_avg_participants": AsyncMock(return_value=avg),
-        "get_adjustment_rate_sigma": AsyncMock(return_value=sigma),
+        "get_preprice_rate_sigma": AsyncMock(return_value=sigma),
     }
     with contextlib.ExitStack() as stack:
         for name, mock in targets.items():
@@ -303,7 +303,7 @@ def test_avg_participants_failure_does_not_break_response(client):
                AsyncMock(return_value=(_MOCK_ROWS, scope))), \
          patch("app.api.v1.distribution.get_offset_distribution_cached",
                AsyncMock(return_value=_MOCK_ROWS)), \
-         patch("app.api.v1.distribution.get_adjustment_rate_sigma",
+         patch("app.api.v1.distribution.get_preprice_rate_sigma",
                AsyncMock(return_value=None)),          patch("app.api.v1.distribution.get_avg_participants",
                AsyncMock(side_effect=RuntimeError("relation does not exist"))):
         resp = _call(client, {"bid_notice_id": "TEST-001"})
@@ -320,7 +320,7 @@ def test_sigma_failure_does_not_break_response(client):
     with patch("app.api.v1.distribution.resolve_offset_distribution",
                AsyncMock(return_value=(_MOCK_ROWS, scope))),          patch("app.api.v1.distribution.get_offset_distribution_cached",
                AsyncMock(return_value=_MOCK_ROWS)),          patch("app.api.v1.distribution.get_avg_participants",
-               AsyncMock(return_value=150)),          patch("app.api.v1.distribution.get_adjustment_rate_sigma",
+               AsyncMock(return_value=150)),          patch("app.api.v1.distribution.get_preprice_rate_sigma",
                AsyncMock(side_effect=RuntimeError("stddev_samp is not defined"))):
         resp = _call(client, {"bid_notice_id": "TEST-001", "my_bid_price": my_bid})
 

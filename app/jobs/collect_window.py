@@ -30,24 +30,39 @@ def pending_ranges(
     ranges: list[tuple[date, date]] = []
     current = start
     run_start: date | None = None
-    run_len = 0
+    run_end: date | None = None
+    weekdays = 0
 
     def close():
-        nonlocal run_start, run_len
-        if run_start is not None:
-            ranges.append((run_start, run_start + timedelta(days=run_len - 1)))
-            run_start = None
-            run_len = 0
+        nonlocal run_start, run_end, weekdays
+        if run_start is not None and run_end is not None:
+            ranges.append((run_start, run_end))
+        run_start = run_end = None
+        weekdays = 0
 
     while current <= end:
         if current in collected:
             close()
+        elif current.weekday() >= 5:
+            # 주말은 **후보도 경계도 아니다.**
+            #
+            # 개찰이 평일에만 있어 토·일은 수집해도 결과가 없다 — DB 전 기간
+            # 요일별 공고 수: 월 2,222 화 3,923 수 3,393 목 3,343 금 3,035,
+            # 토 0, 일 0. 결과가 없으니 `collected` 에도 영원히 안 들어가고,
+            # 그래서 매 실행마다 미수집으로 다시 잡혀 브라우저 세션을 낭비했다.
+            #
+            # 다만 구간을 쪼개지도 않는다. 금요일과 다음 월요일은 이어진 한
+            # 구간이어야 한다 — 쪼개면 세션이 구간마다 새로 뜬다.
+            pass
         else:
             if run_start is None:
                 run_start = current
-                run_len = 0
-            run_len += 1
-            if run_len == max_span:
+                weekdays = 0
+            run_end = current
+            weekdays += 1
+            # max_span 은 이제 **평일 수**로 센다. 브라우저 세션이 버티는
+            # 한계는 달력 일수가 아니라 실제로 훑는 공고 양에 가깝다.
+            if weekdays == max_span:
                 close()
         current += timedelta(days=1)
 

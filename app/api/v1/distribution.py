@@ -16,7 +16,7 @@ from app.db.crud_distribution import (
     get_offset_distribution_cached,
     resolve_offset_distribution,
     get_avg_participants,
-    get_adjustment_rate_sigma,
+    get_preprice_rate_sigma,
 )
 from app.engine import contract_law
 from app.engine.distribution import build_scoped_distribution, calc_my_position
@@ -130,7 +130,7 @@ async def get_bid_distribution(
     # σ 를 구해 넘기면 그 어긋남을 ±1σ 밴드로 함께 반환한다.
     # 여기서 실패해도 분포 응답까지 죽이지 않는다 — 밴드만 사라진다.
     try:
-        rate_sigma = await get_adjustment_rate_sigma(db)
+        rate_sigma = await get_preprice_rate_sigma(db)
     except Exception:
         rate_sigma = None
 

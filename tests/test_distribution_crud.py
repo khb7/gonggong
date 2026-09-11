@@ -35,6 +35,19 @@ def _total(bins: list[dict]) -> int:
     return sum(b["count"] for b in bins)
 
 
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """분포 캐시는 모듈 전역이라 테스트 간에 살아남는다.
+
+    σ 는 None 결과까지 캐시하므로(매 요청 재조회를 막으려고), 초기화하지 않으면
+    앞 테스트가 넣어둔 값이 다음 테스트의 답이 된다.
+    """
+    from app.engine import distribution_cache
+    distribution_cache.invalidate()
+    yield
+    distribution_cache.invalidate()
+
+
 @pytest_asyncio.fixture
 async def db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -332,3 +345,85 @@ async def test_zero_lower_limit_price_is_also_excluded(db):
     bins = await get_offset_distribution(db, client_name="테스트발주처")
 
     assert _total(bins) == 2, f"낙찰하한가 0 인 공고가 집계에 남았다: {bins}"
+
+
+# ──────────────────────────────────────────
+# 사정률 σ (내 위치 오차 밴드의 폭)
+# ──────────────────────────────────────────
+
+async def _add_sigma_sample(session, n: int, *, preprice: float, adjustment: float):
+    """σ 표본. preprice_rate 와 adjustment_rate 를 일부러 다르게 준다."""
+    for i in range(n):
+        # 두 컬럼에 서로 다른 산포를 넣어, σ 가 어느 쪽에서 나오는지 가른다.
+        pp = preprice + (0.001 if i % 2 else -0.001)
+        adj = adjustment + (0.020 if i % 2 else -0.020)
+        session.add(
+            BidsHistory(
+                project_id=f"S{i}",
+                client_name="시그마", client_id="None", region="경기",
+                bid_type="적격심사", price_method="기타",
+                base_price=800_000_000,
+                lower_limit_price=700_000_000,
+                legal_limit_rate=LOWER_LIMIT, lower_limit_rate=LOWER_LIMIT,
+                preprice_rate=Decimal(str(pp)),
+                adjustment_rate=Decimal(str(adj)),
+                winner_price=700_000_000,
+                bid_date=date(2025, 5, 1), participants=40,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_sigma_comes_from_preprice_rate_not_adjustment_rate(db):
+    """σ 는 사정률(preprice_rate)에서 나와야 한다.
+
+    `adjustment_rate` 는 **낙찰가/기초금액**(중앙 0.883)이고 사정률이 아니다.
+    이걸로 σ 를 재면 두 가지가 겹쳐 틀린다:
+
+      - 낙찰률의 산포는 사정률보다 3.3배 넓다 (0.0235 vs 0.0071)
+      - 유효범위 필터가 0.90~1.10 이라 중앙 0.883 인 낙찰률은 윗꼬리만 남는다
+        (실측 표본 3,182건 = 전체의 19.5%)
+
+    같은 실수를 T-015 에서 `bidding.py` 에서 걷어냈는데 분포 경로에 남아 있었다.
+    """
+    from app.db.crud_distribution import get_preprice_rate_sigma
+
+    # 사정률은 ±0.001 로 촘촘, 낙찰률은 ±0.020 으로 넓게
+    await _add_sigma_sample(db, 120, preprice=0.999, adjustment=0.95)
+    await db.commit()
+
+    sigma = await get_preprice_rate_sigma(db)
+
+    assert sigma is not None, "σ 가 None 이다 — 표본이 충분한데 계산이 실패했다"
+    # 사정률 쪽 산포(≈0.001)를 따라야 한다. 낙찰률(≈0.020)을 따르면 20배 커진다.
+    assert Decimal("0.0005") < sigma < Decimal("0.003"), (
+        f"σ={sigma} — adjustment_rate 를 쓰면 0.02 대가 나온다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sigma_works_on_sqlite(db):
+    """SQLite 에서 계산돼야 한다.
+
+    `stddev_samp` 는 Postgres 전용이라 SQLite 에서 `no such function` 으로 죽는다.
+    호출부가 try/except 로 감싸고 있어 에러가 삼켜졌고, 그 결과 **운영(SQLite)에서
+    밴드가 한 번도 뜬 적이 없다** — rate_sigma 가 항상 None 이었다.
+    합/제곱합은 SQL 에서 집계하고 제곱근만 파이썬에서 취한다.
+    """
+    from app.db.crud_distribution import get_preprice_rate_sigma
+
+    await _add_sigma_sample(db, 120, preprice=0.999, adjustment=0.95)
+    await db.commit()
+
+    assert await get_preprice_rate_sigma(db) is not None
+
+
+@pytest.mark.asyncio
+async def test_sigma_none_when_sample_too_small(db):
+    """표본이 적으면 None — 근거 없는 밴드 폭을 그리지 않는다."""
+    from app.db.crud_distribution import get_preprice_rate_sigma
+
+    await _add_sigma_sample(db, 10, preprice=0.999, adjustment=0.95)
+    await db.commit()
+
+    assert await get_preprice_rate_sigma(db) is None
