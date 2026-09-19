@@ -39,6 +39,8 @@ from app.jobs.collect_window import pending_ranges
 from scripts.etl_csv import extract_and_transform, load_to_db
 from scripts.info21c_downloader import run_download
 from scripts.info21c_participants import DEFAULT_ID, DEFAULT_PW, LICENSE_TYPES, run
+from scripts import info21c_open_notices as open_notices
+from scripts import info21c_final_awards as final_awards
 
 # 한 번에 넘기는 최대 일수. 길면 브라우저 세션이 버티지 못한다.
 MAX_SPAN = 7
@@ -156,6 +158,23 @@ async def main_async(args) -> None:
                 # 다시 미수집으로 잡히므로 따라잡힌다.
                 print(f"  실패: {type(e).__name__}: {e}", flush=True)
 
+    # ── 부가 leg (T-035) ─────────────────────────────────────────────────────
+    # 3. 개찰 전 공고 — 분포 엔진 입력 자동 조회용. 하한율·A값이 늦게 발표되므로
+    #    개찰 전까지 매번 다시 긁는다 (None 으로 기존 값을 지우지 않는다).
+    # 4. 최종낙찰현황 — 실제 계약 업체. 1순위 ≠ 계약 업체 비율을 잰다.
+    # 둘 다 실패해도 주 leg 결과는 유효하므로 종료 코드에 넣지 않는다.
+    for label, coro in (
+        ("개찰 전 공고", open_notices.run(days=21, headless=args.headless,
+                                         user_id=DEFAULT_ID, password=DEFAULT_PW)),
+        ("최종낙찰현황", final_awards.run(start=start, end=end, headless=args.headless,
+                                         user_id=DEFAULT_ID, password=DEFAULT_PW)),
+    ):
+        print(f"\n[{label}]", flush=True)
+        try:
+            await coro
+        except Exception as e:
+            print(f"  실패: {type(e).__name__}: {e}", flush=True)
+
     # ── 고아 검사 ────────────────────────────────────────────────────────────
     # 참여자만 들어오고 공고가 안 들어온 경우를 잡는다. 조용히 넘어가면
     # 몇 달치가 엔진에서 사라진 채로 쌓인다 (실제로 2026-05~08 에 그랬다).
@@ -164,7 +183,9 @@ async def main_async(args) -> None:
     print(f"\n고아 공고: {orphans_before} → {orphans_after} ({delta:+d})")
     if delta > 0:
         print(
-            f"⚠ 고아가 {delta}건 늘었다. 목록 leg 가 공고를 놓쳤다는 뜻이다.\n"
+            f"[!] 고아가 {delta}건 늘었다. 목록 leg 가 공고를 놓쳤다는 뜻이다.\n"
+            f"  단, 종합심사(100억+) 공고는 낙찰하한율이 없어 etl_csv 가 버리므로 여기 잡힌다 —\n"
+            f"  참여자 파일 헤더의 발주기관이 국군재정관리단·한전·LH 면 오탐이다.\n"
             f"  같은 구간을 좁혀서 다시 돌리고, 그래도 남으면 목록 페이지네이션을 확인할 것.\n"
             f"  (엑셀 내보내기는 현재 페이지만 내보낸다 — info21c_downloader.goto_next_page)"
         )
@@ -174,4 +195,7 @@ async def main_async(args) -> None:
 
 
 if __name__ == "__main__":
+    # cp949 콘솔에서 한글·기호 출력이 UnicodeEncodeError 로 죽지 않게 한다
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     asyncio.run(main_async(_parse_args()))

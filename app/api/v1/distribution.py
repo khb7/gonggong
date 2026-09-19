@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type
 from app.db.models import ProjectBucket
+from app.db.crud import get_open_notice
 from app.db.crud_distribution import (
     get_offset_distribution_cached,
     resolve_offset_distribution,
@@ -50,28 +51,45 @@ async def get_bid_distribution(
     my_bid_price 없으면 my_position은 null.
     """
 
-    # ── 1. G2B 공고 조회 ─────────────────────────────────────
-    fetcher = _get_fetcher()
-    g2b_status = "mock" if settings.use_mock_g2b else "ok"
-    try:
-        notice = await fetcher.fetch(body.bid_notice_id)
-    except Exception:
-        g2b_status = "failed"
-        from app.external.g2b_fetcher import G2BNoticeData
+    # ── 1. 공고 조회: info21c 개찰 전 공고 → G2B ──────────────
+    # info21c 수집분(bid_notices_open)에는 기초금액·하한율·A값·발주처·지역·업종이
+    # 공고 시점에 전부 있다. G2B 단건 조회는 T-016 으로 죽어 있으므로 이쪽이 먼저다.
+    from app.external.g2b_fetcher import G2BNoticeData
+
+    a_value = 0
+    open_notice = await get_open_notice(db, body.bid_notice_id)
+    if open_notice is not None:
+        g2b_status = "info21c"
         notice = G2BNoticeData(
-            base_price=0,
-            client_name="",
-            region="",
-            project_type="",
-            lower_limit_rate=None,
-            participants=0,
+            base_price=int(open_notice.base_price or 0),
+            client_name=open_notice.client_name or "",
+            region=open_notice.region or "",
+            project_type=open_notice.license_text or "",
+            lower_limit_rate=open_notice.legal_limit_rate,
+            bid_notice_no=open_notice.project_id,
+            price_method=open_notice.price_method,
         )
+        a_value = int(open_notice.a_value or 0)
+    else:
+        fetcher = _get_fetcher()
+        g2b_status = "mock" if settings.use_mock_g2b else "ok"
+        try:
+            notice = await fetcher.fetch(body.bid_notice_id)
+        except Exception:
+            g2b_status = "failed"
+            notice = G2BNoticeData(
+                base_price=0,
+                client_name="",
+                region="",
+                project_type="",
+                lower_limit_rate=None,
+                participants=0,
+            )
 
     # ── 2. Override 적용 ─────────────────────────────────────
     base_price = notice.base_price
     lower_limit_rate = notice.lower_limit_rate
-    # A값은 G2B 개방표준 API에 항목이 없다 → override로만 들어온다.
-    a_value = 0
+    # A값은 G2B 개방표준 API에 항목이 없다 → info21c 수집분 아니면 override로만 들어온다.
     client_name = notice.client_name
     region = normalize_region(notice.region)
     project_type = normalize_project_type(notice.project_type) or notice.project_type

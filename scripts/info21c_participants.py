@@ -318,105 +318,33 @@ async def update_bid_type_and_method(project_id: str, bid_type: str, price_metho
 
 
 async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
-    """참여자 Excel -> bid_participants 적재. 삽입 건수 반환.
+    """참여자 Excel -> DB 적재. 삽입한 참여자 행 수 반환.
+
+    파싱은 `app.etl.participant_excel`, 쓰기는 `app.db.crud_collect` 가 한다 (T-035).
+    한 장에서 참여자 행(업체 식별자 포함) 외에 추정가격과 복수예가 15개도 같이 꺼낸다.
 
     투찰율은 **원본 컬럼을 그대로 믿지 않고 투찰금액에서 다시 계산한다.**
     원본은 보통 A값이 반영된 조정값을 주지만 공고에 따라 그렇지 않다 —
     A값 공고 14,579개 중 1,158개(7.9%)에서 전 참여자 행이 어긋난다.
-    낙찰자 불변식으로 판정하면 재계산이 160:1 로 옳다
-    (`app.engine.a_value.bid_rate_with_a_value` 주석 참고).
-
     예정가격을 모르면 재계산할 수 없으므로 그때만 원본값을 쓴다.
     목록 leg 가 먼저 돌면(daily_collect) 예정가격은 이미 들어와 있다.
     """
-    import pandas as pd
-    from decimal import Decimal
     from app.db.session import AsyncSessionLocal
-    from app.db.models import BidParticipants, BidsHistory
-    from app.engine.a_value import bid_rate_with_a_value
-    from sqlalchemy import select
+    from app.db.crud_collect import save_participant_workbook
+    from app.etl.participant_excel import parse_participant_workbook
 
     try:
-        suffix = excel_path.suffix.lower()
-        engine = "xlrd" if suffix == ".xls" else "openpyxl"
-        engine_kwargs = {"ignore_workbook_corruption": True} if suffix == ".xls" else {}
-
-        # 헤더 행 동적 탐색 (순위 컬럼이 있는 행)
-        read_kwargs = {"header": None, "engine": engine}
-        if engine_kwargs:
-            read_kwargs["engine_kwargs"] = engine_kwargs
-        df_raw = pd.read_excel(excel_path, **read_kwargs)
-
-        header_row = None
-        for i, row in df_raw.iterrows():
-            if any("순위" in str(v) for v in row if pd.notna(v)):
-                header_row = i
-                break
-
-        if header_row is None:
-            print(f"    [!] 헤더 행을 찾을 수 없음")
-            return 0
-
-        read_kwargs["header"] = header_row
-        df = pd.read_excel(excel_path, **read_kwargs)
-        df.columns = df.columns.str.strip()
+        wb = parse_participant_workbook(excel_path)
     except Exception as e:
         print(f"    [!] Excel 읽기 실패: {e}")
         return 0
-
-    col_rank   = next((c for c in df.columns if "순위" in str(c)), None)
-    col_amount = next((c for c in df.columns if "투찰금액" in str(c)), None)
-    col_rate   = next((c for c in df.columns if "투찰율" in str(c)), None)
-
-    if not all([col_rank, col_amount, col_rate]):
-        print(f"    [!] 필수 컬럼 없음: {df.columns.tolist()}")
+    if not wb.rows:
+        print(f"    [!] 참여자 행을 찾을 수 없음")
         return 0
 
-    inserted = 0
     async with AsyncSessionLocal() as session:
-        # 재계산에 쓸 공고 값. 목록 leg 가 먼저 돌면 채워져 있다.
-        notice = (await session.execute(
-            select(BidsHistory.est_price, BidsHistory.a_value)
-            .where(BidsHistory.project_id == project_id)
-        )).first()
-        est_price = int(notice[0] or 0) if notice else 0
-        a_value = int(notice[1] or 0) if notice else 0
-
-        for _, row in df.iterrows():
-            try:
-                rank = int(float(str(row[col_rank]).replace(",", "").strip()))
-                amount = int(float(str(row[col_amount]).replace(",", "").strip()))
-                rate_raw = float(str(row[col_rate]).replace(",", "").strip())
-                # 투찰율이 100% 단위면 소수로 변환
-                source_rate = Decimal(str(rate_raw / 100 if rate_raw > 1 else rate_raw))
-            except (ValueError, TypeError):
-                continue
-
-            # 투찰금액에서 다시 계산한 값을 우선한다. 89% 는 원본과 같고,
-            # 갈리는 11% 에서는 재계산이 옳다는 것이 낙찰자 불변식으로 확인됐다.
-            bid_rate = bid_rate_with_a_value(amount, est_price, a_value) or source_rate
-
-            existing = await session.scalar(
-                select(BidParticipants).where(
-                    BidParticipants.project_id == project_id,
-                    BidParticipants.rank == rank,
-                )
-            )
-            if existing:
-                continue
-
-            session.add(BidParticipants(
-                project_id = project_id,
-                rank       = rank,
-                bid_amount = amount,
-                bid_rate   = bid_rate,
-                is_winner  = (rank == 1),
-            ))
-            inserted += 1
-
-        await session.commit()
-
-    return inserted
+        res = await save_participant_workbook(session, wb, project_id=project_id)
+    return res.participants_inserted
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────

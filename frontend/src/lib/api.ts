@@ -22,7 +22,7 @@ export interface BidResult {
   bid_notice_id: string;
   mode: "auto" | "override";
   overridden_fields: string[];
-  g2b_fetch_status: "ok" | "failed" | "mock";
+  g2b_fetch_status: "info21c" | "ok" | "failed" | "mock";
   fetched: {
     base_price: number;
     client_name: string;

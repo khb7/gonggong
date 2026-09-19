@@ -215,9 +215,22 @@ cd frontend && npx vitest run && npx tsc --noEmit
 
 ```
 scripts/info21c_downloader.py     목록 Excel   → (etl_csv) → bids_history
-scripts/info21c_participants.py   참여자 Excel →            bid_participants
-scripts/daily_collect.py          ← 위 둘을 순서대로 돌리는 진입점. 이걸 쓴다
+scripts/info21c_participants.py   참여자 Excel →            bid_participants (+추정가격, 복수예가, 업체 식별자)
+scripts/info21c_open_notices.py   개찰 전 공고 상세 →       bid_notices_open   (T-035, 부가 leg)
+scripts/info21c_final_awards.py   최종낙찰현황 →            bid_final_awards   (T-035, 부가 leg)
+scripts/daily_collect.py          ← 위 넷을 순서대로 돌리는 진입점. 이걸 쓴다
 ```
+
+부가 leg 둘은 실패해도 종료 코드에 안 들어간다. `bid_notices_open` 은
+`/bid/distribution` 이 공고번호로 **G2B 보다 먼저** 보는 표라, 개찰 전 공고는 이 leg 가
+돌아야 자동 조회된다 (하한율·A값은 늦게 발표되므로 개찰 전까지 매번 다시 긁는다).
+
+⚠ 참여자·목록 leg 가 "실내건축" 으로 받는 코드 `C002` 는 사이트에서 **건축** 이다
+(실내건축[대] 는 `C081`, 최종낙찰현황 페이지에서만 고를 수 있다). DB 에 건축 6,145건 /
+실내건축 979건인 이유. 계정 맞춤설정에 실내건축이 없어서 목록 필터로는 못 받는다.
+
+참여자 Excel 은 `app/etl/participant_excel.py` 가 파싱한다. 로컬 파일 16,000장으로
+과거분을 다시 채울 땐 `python scripts/backfill_from_participant_excel.py --resume`.
 
 **주 1회 루틴:**
 ```bash

@@ -97,6 +97,12 @@ class BidsHistory(Base):
         Numeric(12, 8), nullable=True,
         comment="실효 낙찰하한율 = 낙찰하한가 / 예정가격 (A값 포함)"
     )
+    # 추정가격(부가세 제외). 낙찰하한율 구간(10억 미만 등)을 정하는 기준값이라
+    # snap_legal_limit_rate() 의 후보 선택을 구간으로 검증할 수 있다.
+    # 참여자 Excel 헤더에 있어 T-035 에서 백필했다.
+    estimated_price: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="추정가격 (원, 부가세 제외)"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -204,6 +210,18 @@ class BidParticipants(Base):
     )
     is_winner: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, comment="낙찰자 여부 (rank=1)"
+    )
+    # 업체 식별자. 참여자 Excel 에 처음부터 있었는데 버려지고 있었다 (T-035).
+    # 300건 표본에서 업체 13,959개 중 2,332개가 20회 이상 참여 — 상습 참여자와
+    # 신규 참여자를 갈라 보거나 발주처별 단골 경쟁자를 뽑을 수 있다.
+    company_id: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, index=True, comment="사업자등록번호"
+    )
+    company_name: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, comment="업체명"
+    )
+    ceo_name: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="대표자"
     )
 
     created_at: Mapped[datetime] = mapped_column(
@@ -352,3 +370,62 @@ class ProjectBucket(Base):
             return 3
         else:
             return 4
+
+
+class BidNoticeOpen(Base):
+    """
+    개찰 전 공고 (info21c /bid/view/con). T-035.
+
+    분포 엔진 입력(기초금액·하한율·A값·발주처·지역·업종)이 공고 시점에 전부
+    여기 있다. `/bid/distribution` 은 공고번호로 이 표를 먼저 보고, 없을 때만
+    G2B 를 부른다 (G2B 단건 조회는 T-016 으로 죽어 있고 API 승인은 T-009 대기).
+    하한율·A값은 발표가 늦을 수 있어 None 허용 — 기본값을 채우지 않는다.
+    """
+
+    __tablename__ = "bid_notices_open"
+
+    project_id: Mapped[str] = mapped_column(String(50), primary_key=True, comment="나라장터 공고 번호")
+    info21c_bidid: Mapped[str | None] = mapped_column(String(40), nullable=True, comment="info21c 내부 id")
+    notice_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    client_name: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True, comment="발주기관")
+    demand_org: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="수요기관")
+    region: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    license_text: Mapped[str | None] = mapped_column(String(300), nullable=True, comment="업종 원문")
+    contract_method: Mapped[str | None] = mapped_column(String(30), nullable=True, comment="계약방법 (수의/적격 …)")
+    price_method: Mapped[str] = mapped_column(String(20), nullable=False, default="기타")
+    preprice_range_pct: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, comment="예가변동폭 ±N% (2=국가계약, 3=지방계약)"
+    )
+    legal_limit_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True, comment="법정 낙찰하한율")
+    a_value: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, comment="A값 (원)")
+    base_price: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="기초금액 (원)")
+    estimated_price: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="추정가격 (원)")
+    bid_close_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="투찰마감")
+    open_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True, comment="개찰일시")
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BidFinalAward(Base):
+    """
+    최종낙찰현황 (info21c /suc/last/con) — 실제 계약 업체. T-035.
+
+    낙찰정보의 1순위는 개찰 1순위일 뿐이다. 적격심사 탈락·포기로 후순위가
+    계약하는 비율을 `bid_participants` 의 rank=1 업체와 대조해 잰다.
+    """
+
+    __tablename__ = "bid_final_awards"
+
+    project_id: Mapped[str] = mapped_column(String(50), primary_key=True, comment="나라장터 공고 번호")
+    info21c_bidid: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    notice_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    client_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    open_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    award_amount: Mapped[int | None] = mapped_column(BigInteger, nullable=True, comment="낙찰금액 (원)")
+    company_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    ceo_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

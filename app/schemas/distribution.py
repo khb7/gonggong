@@ -82,7 +82,9 @@ class DistributionResponse(BaseModel):
             "복수예비가격 생성범위가 규정으로 정해져 있어(국가 ±2% / 지방 ±3%) 추정값이 아니다."
         ),
     )
-    g2b_fetch_status: str = Field(..., description='"ok" | "failed" | "mock"')
+    g2b_fetch_status: str = Field(
+        ..., description='"info21c"(개찰 전 공고 수집분) | "ok" | "failed" | "mock"'
+    )
     rate_sigma: float | None = Field(
         None,
         description="사정률 표준편차 (소수). null이면 표본 부족으로 오차 밴드를 그리지 않는다",

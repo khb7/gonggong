@@ -73,8 +73,10 @@ def _dist(
 @pytest.fixture
 def client():
     mock_settings = type("S", (), {"use_mock_g2b": True, "G2B_API_KEY": ""})()
+    # db 가 AsyncMock 이라 개찰 전 공고 조회가 가짜 객체를 돌려준다 → 기본은 "없음"
     with patch("app.api.v1.distribution._get_fetcher", return_value=MockG2BFetcher()), \
          patch("app.api.v1.distribution.settings", mock_settings), \
+         patch("app.api.v1.distribution.get_open_notice", AsyncMock(return_value=None)), \
          TestClient(app) as c:
         yield c
 

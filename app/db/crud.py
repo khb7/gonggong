@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BidsHistory, BidLicenseType, ClientStatistics
+from app.db.models import BidsHistory, BidLicenseType, ClientStatistics, BidNoticeOpen
 
 # Fallback 최소 샘플 수
 MIN_SAMPLE_SIZE = 20
@@ -211,3 +211,8 @@ async def get_participant_collected_dates(
         .distinct()
     )
     return {row[0] for row in result.fetchall()}
+
+
+async def get_open_notice(db: AsyncSession, project_id: str) -> BidNoticeOpen | None:
+    """개찰 전 공고 (info21c 수집분). 없으면 None → 호출측이 G2B 로 넘어간다 (T-035)."""
+    return await db.get(BidNoticeOpen, project_id.strip())

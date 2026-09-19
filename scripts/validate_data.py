@@ -279,6 +279,50 @@ async def validate(conn) -> tuple[list[str], list[str], int]:
     else:
         print("[불변식] 참여자 데이터 없음 — 검사 건너뜀")
 
+    # ── T-035 추가 수집분 커버리지 ─────────────────────────────────────────
+    cov = await conn.fetchrow(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM bid_participants)                                AS p_tot,
+          (SELECT COUNT(*) FROM bid_participants WHERE company_id IS NOT NULL)   AS p_firm,
+          (SELECT COUNT(*) FROM bids_history WHERE estimated_price IS NOT NULL)  AS est,
+          (SELECT COUNT(DISTINCT project_id) FROM bid_preliminary_prices)        AS prelim,
+          (SELECT COUNT(*) FROM bid_notices_open)                                AS open_n,
+          (SELECT COUNT(*) FROM bid_notices_open WHERE legal_limit_rate IS NULL) AS open_nolimit,
+          (SELECT COUNT(*) FROM bid_final_awards)                                AS award_n
+        """
+    )
+    if cov:
+        pct = lambda a, b: (a / b * 100) if b else 0.0
+        print(f"[업체식별] company_id 채워진 참여자 행: {pct(cov['p_firm'], cov['p_tot']):.1f}% ({cov['p_firm']}/{cov['p_tot']})")
+        print(f"[추정가격] 채워진 공고: {pct(cov['est'], total):.1f}% ({cov['est']}/{total})")
+        print(f"[복수예가] 15개 적재된 공고: {pct(cov['prelim'], total):.1f}% ({cov['prelim']}/{total})")
+        print(f"[개찰전공고] {cov['open_n']}건 (하한율 미발표 {cov['open_nolimit']}건)")
+        print(f"[최종낙찰] {cov['award_n']}건")
+
+    # 최종낙찰 업체 vs 개찰 1순위 업체. 다르면 적격심사 탈락·포기로 후순위가 계약한 것.
+    # is_winner = (rank == 1) 가정이 얼마나 맞는지 재는 유일한 근거다.
+    fa = await conn.fetchrow(
+        """
+        SELECT
+          COUNT(*)                                                            AS matched,
+          SUM(CASE WHEN p.company_name IS NOT NULL
+                    AND REPLACE(REPLACE(p.company_name,' ',''),'(주)','주식회사')
+                     <> REPLACE(REPLACE(a.company_name,' ',''),'(주)','주식회사')
+                   THEN 1 ELSE 0 END)                                         AS differ,
+          SUM(CASE WHEN p.company_name IS NULL THEN 1 ELSE 0 END)             AS unknown
+        FROM bid_final_awards a
+        JOIN bid_participants p ON p.project_id = a.project_id AND p.rank = 1
+        """
+    )
+    if fa and fa["matched"]:
+        known = fa["matched"] - (fa["unknown"] or 0)
+        d = fa["differ"] or 0
+        print(
+            f"[최종낙찰] 1순위와 계약 업체가 다른 공고: "
+            f"{(d / known * 100) if known else 0:.1f}% ({d}/{known}, 업체 미상 {fa['unknown'] or 0})"
+        )
+
     return warnings, failures, total
 
 
