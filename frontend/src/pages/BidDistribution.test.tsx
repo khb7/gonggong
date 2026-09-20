@@ -1,3 +1,4 @@
+import { findBestAim, prepareDistribution } from "@/lib/distribution";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { cloneElement, type ReactElement } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
@@ -214,6 +215,29 @@ describe("BidDistribution", () => {
     // (기초금액 − A) × (하한율 + offset) + A, A값 없음
     const expected = Math.round(100_000_000 * (0.87745 - 0.008));
     expect(screen.getByText(expected.toLocaleString())).toBeInTheDocument();
+  });
+
+  it("발주처 σ 가 있으면 추천가는 발주처 기준 고정 조준이다", async () => {
+    const result = makeResult({ preprice_sd_pct: 0.549 } as any);
+    vi.mocked(getBidDistribution).mockResolvedValue(result);
+    renderPage();
+    await loadDistribution();
+
+    const aim = findBestAim(
+      prepareDistribution(result.distribution).bins,
+      result.base_price,
+      result.lower_limit_rate,
+      0,
+      0.549,
+    )!;
+    expect(aim).not.toBeNull();
+    expect(aim.offset_pct).toBeGreaterThanOrEqual(0);
+    expect(screen.getByText(/이 발주처 기준 조준/)).toBeInTheDocument();
+    // 카드와 교환표 추천 행 두 곳에 같은 금액이 찍힌다 — 그게 의도다
+    expect(screen.getAllByText(aim.estimated_price.toLocaleString()).length).toBeGreaterThanOrEqual(2);
+    // 교환표의 추천 행도 같은 자리를 가리킨다
+    const row = screen.getByText("추천").closest("tr")!;
+    expect(row.textContent).toContain(aim.estimated_price.toLocaleString());
   });
 
   it("낙찰 표본이 모자라면 추천 카드를 그리지 않는다", async () => {

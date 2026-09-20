@@ -16,6 +16,7 @@ import {
   findBestWinRateBin,
   rankWinRateBins,
   buildOffsetTradeoff,
+  findBestAim,
   zoneWinRate,
   WIN_ZONE_MIN_SAMPLE,
   type LocalPosition,
@@ -240,6 +241,20 @@ export default function BidDistribution() {
     [prepared],
   );
 
+  // 발주처 기준 고정 조준. 발주처 계약법 σ 로 무효까지 반영한 기대 낙찰이 최대인
+  // 자리다. 공고마다 손으로 고르는 값이 아니라 발주처가 정하는 값이고, σ 를 모르면
+  // null 이라 그때는 bestBin(과거 낙찰 최빈 칸)이 추천 자리다.
+  const bestAim = useMemo(() => {
+    if (!result) return null;
+    return findBestAim(
+      prepared.bins,
+      result.base_price,
+      result.lower_limit_rate,
+      result.a_value,
+      result.preprice_sd_pct,
+    );
+  }, [result, prepared]);
+
   // 조준 위치를 올렸을 때 무효율과 기대 낙찰이 어떻게 교환되는지.
   // 사정률 산포를 모르면(계약법 불명) null 이고, 그때는 표를 그리지 않는다.
   const tradeoff = useMemo(() => {
@@ -250,9 +265,9 @@ export default function BidDistribution() {
       result.lower_limit_rate,
       result.a_value,
       result.preprice_sd_pct,
-      bestBin.offset_pct,
+      bestAim ? bestAim.offset_pct : bestBin.offset_pct,
     );
-  }, [result, prepared, bestBin]);
+  }, [result, prepared, bestBin, bestAim]);
 
   // 구간 안팎 낙찰률 비교. count(필터 표본)와 win_count(전체 표본)의
   // 출처가 다르면 성립하지 않으므로 같은 표본일 때만 계산한다.
@@ -579,21 +594,40 @@ export default function BidDistribution() {
                 </ComposedChart>
               </ResponsiveContainer>
 
-              {/* 추천 투찰가 — 낙찰 빈도 최대 구간 */}
+              {/*
+                추천 투찰가. 발주처 σ 가 있으면 고정 조준(bestAim), 없으면 과거 낙찰
+                최빈 칸(bestBin). 둘 다 같은 카드에 그려 화면 구조가 바뀌지 않게 한다.
+              */}
               {bestBin && (
                 <div className="mx-2 mt-3 rounded-md border border-primary/40 bg-primary/5 px-3 py-3">
                   <div className="flex items-baseline justify-between gap-2 flex-wrap">
                     <span className="text-xs text-muted-foreground">추천 투찰가</span>
                     <Badge variant="outline" className="font-mono text-[11px]">
-                      offset {bestBin.offset_pct > 0 ? "+" : ""}{bestBin.offset_pct.toFixed(1)}%
+                      offset {(bestAim ?? bestBin).offset_pct > 0 ? "+" : ""}
+                      {(bestAim ?? bestBin).offset_pct.toFixed(1)}%
                     </Badge>
                   </div>
                   <p className="text-2xl font-bold font-mono tracking-tight mt-0.5">
-                    {formatNumber(bestBin.estimated_price)}
+                    {formatNumber((bestAim ?? bestBin).estimated_price)}
                     <span className="text-sm font-normal text-muted-foreground ml-1">원</span>
                   </p>
+                  {bestAim && (
+                    <p className="text-xs mt-1.5">
+                      이 발주처 기준 조준 — 기대 낙찰{" "}
+                      <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                        {bestAim.expected_win_pct.toFixed(2)}%
+                      </span>
+                      , 무효 확률{" "}
+                      <span className="font-bold text-rose-600 dark:text-rose-400">
+                        {bestAim.invalid_pct.toFixed(0)}%
+                      </span>
+                      <span className="text-muted-foreground">
+                        {" "}(사정률 σ {result.preprice_sd_pct.toFixed(2)}%). 이 발주처의 모든 공고에 같은 조준을 씁니다.
+                      </span>
+                    </p>
+                  )}
                   <p className="text-xs mt-1.5">
-                    이 구간 과거 낙찰 빈도{" "}
+                    과거 낙찰 최빈 칸 {bestBin.offset_pct > 0 ? "+" : ""}{bestBin.offset_pct.toFixed(1)}% 의 낙찰 빈도{" "}
                     <span className="font-bold text-emerald-700 dark:text-emerald-400">
                       {bestBin.historical_win_rate.toFixed(2)}%
                     </span>
@@ -682,8 +716,18 @@ export default function BidDistribution() {
                       {candidates.length > 1 && (
                         <div className="mt-3 pt-2 border-t border-primary/20">
                           <p className="text-[10px] text-muted-foreground mb-1">
-                            추천 자리는 <span className="font-semibold text-foreground">과거 낙찰이
-                            가장 잦았던 칸</span>입니다 (낙찰 {MIN_WIN_SAMPLE_UI}건 이상인 칸만 후보)
+                            {bestAim ? (
+                              <>
+                                추천 조준은 이 칸 분포 위에 <span className="font-semibold text-foreground">발주처
+                                σ 의 착지 분포를 얹어 기대 낙찰이 최대인 자리</span>입니다. 아래는 그 바탕이 된
+                                과거 낙찰 최빈 칸 (낙찰 {MIN_WIN_SAMPLE_UI}건 이상인 칸만 후보)
+                              </>
+                            ) : (
+                              <>
+                                추천 자리는 <span className="font-semibold text-foreground">과거 낙찰이
+                                가장 잦았던 칸</span>입니다 (낙찰 {MIN_WIN_SAMPLE_UI}건 이상인 칸만 후보)
+                              </>
+                            )}
                           </p>
                           <table className="w-full text-[10px] tabular-nums">
                             <tbody>

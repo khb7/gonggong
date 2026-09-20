@@ -10,6 +10,7 @@ import {
   invalidProbability,
   expectedWinRate,
   buildOffsetTradeoff,
+  findBestAim,
 } from "@/lib/distribution";
 import type { OffsetBucket } from "@/lib/api";
 
@@ -776,5 +777,70 @@ describe("rankWinRateBins", () => {
   it("후보가 없으면 빈 배열 — 지어내지 않는다", () => {
     expect(rankWinRateBins([], 3)).toEqual([]);
     expect(rankWinRateBins([bin(0, 99, 1)], 3)).toEqual([]);
+  });
+});
+
+// ── findBestAim ─────────────────────────────────────────────────────────
+
+describe("findBestAim", () => {
+  const basePrice = 800_000_000;
+  const llr = 0.89745;
+  // 실측 모양: 0.0 칸에 낙찰이 몰리고 위로 갈수록 급감
+  const bins = [
+    bin(-0.3, 200, 0),
+    bin(-0.2, 200, 0),
+    bin(-0.1, 200, 0),
+    bin(0.0, 200, 8),
+    bin(0.1, 200, 2),
+    bin(0.2, 200, 1),
+    bin(0.3, 200, 1),
+    bin(0.5, 200, 0),
+    bin(1.0, 200, 0),
+  ];
+
+  it("사정률 산포를 모르면 null — 발주처 기준 조준을 낼 근거가 없다", () => {
+    expect(findBestAim(bins, basePrice, llr, 0, 0)).toBeNull();
+    expect(findBestAim([], basePrice, llr, 0, 0.549)).toBeNull();
+    expect(findBestAim(bins, 0, llr, 0, 0.549)).toBeNull();
+  });
+
+  it("기대 낙찰이 최대인 조준을 고르고, 그 자리의 기대값·무효율과 일치한다", () => {
+    const r = findBestAim(bins, basePrice, llr, 0, 0.549)!;
+    const sd = landingSdPct(0.549, llr, basePrice, 0, r.offset_pct);
+    expect(r.expected_win_pct).toBeCloseTo(expectedWinRate(bins, r.offset_pct, sd), 6);
+    expect(r.invalid_pct).toBeCloseTo(invalidProbability(r.offset_pct, sd), 6);
+    // 격자 위 어떤 조준도 이보다 기대 낙찰이 높지 않다
+    for (let aim = 0; aim <= 2.0001; aim += 0.1) {
+      const a = Math.round(aim * 10) / 10;
+      const s = landingSdPct(0.549, llr, basePrice, 0, a);
+      expect(expectedWinRate(bins, a, s)).toBeLessThanOrEqual(r.expected_win_pct + 1e-9);
+    }
+  });
+
+  it("하한선 아래는 조준하지 않는다", () => {
+    const r = findBestAim(bins, basePrice, llr, 0, 0.549)!;
+    expect(r.offset_pct).toBeGreaterThanOrEqual(0);
+  });
+
+  it("기대 낙찰이 같으면 높은 조준 — 같은 확률이면 무효가 적고 비싸게 받는다", () => {
+    // 산포가 0 에 가까우면 착지가 조준 칸에 그대로 떨어져 0.0 과 0.1 이 같은 칸 값이 될 수 없다.
+    // 대신 평평한 분포를 준다: 모든 칸의 낙찰 빈도가 같으면 어디를 조준해도 기대값이 같다.
+    const flat = [bin(0.0, 100, 5), bin(0.1, 100, 5), bin(0.2, 100, 5), bin(0.3, 100, 5)];
+    const r = findBestAim(flat, basePrice, llr, 0, 0.001)!;
+    expect(r.offset_pct).toBe(0.3);
+  });
+
+  it("산포가 클수록(지방계약법) 조준이 위로 밀리거나 같다", () => {
+    const nat = findBestAim(bins, basePrice, llr, 0, 0.549)!;
+    const loc = findBestAim(bins, basePrice, llr, 0, 0.744)!;
+    expect(loc.offset_pct).toBeGreaterThanOrEqual(nat.offset_pct);
+  });
+
+  it("투찰가는 A값 조정의 역변환이다", () => {
+    const a = 30_000_000;
+    const r = findBestAim(bins, basePrice, llr, a, 0.549)!;
+    expect(r.estimated_price).toBe(
+      Math.round((basePrice - a) * (llr + r.offset_pct / 100) + a),
+    );
   });
 });

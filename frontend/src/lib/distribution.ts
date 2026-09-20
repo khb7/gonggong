@@ -808,3 +808,69 @@ export function buildOffsetTradeoff(
     market_invalid_pct: total > 0 ? (below / total) * 100 : 0,
   };
 }
+
+// ── 발주처 기준 고정 조준 ─────────────────────────────────────────────────
+
+/** 조준 격자 상한 (%p). 그 위는 기대 낙찰이 0 에 수렴한다 (실측: +1.0 에서 이미 1/4) */
+const AIM_GRID_MAX_PCT = 2.0;
+
+export interface BestAim {
+  /** 조준 offset (%p) — 발주처 계약법 σ 기준 기대 낙찰 최대 지점 */
+  offset_pct: number;
+  /** 그 자리의 투찰가 (원) */
+  estimated_price: number;
+  /** 무효까지 반영한 기대 낙찰 빈도 (%) */
+  expected_win_pct: number;
+  /** 하한가 미달 무효 확률 (%) */
+  invalid_pct: number;
+  /** 착지 산포 (%p) */
+  landing_sd_pct: number;
+}
+
+/**
+ * 발주처 계약법의 사정률 산포로 정해지는 **고정 조준**을 찾는다.
+ *
+ * 조준은 공고마다 손으로 고르는 값이 아니다. 자사 투찰 85건(2026-03~09, 국방부 공사)
+ * 검정에서 조준 위치의 산포(0.56%p)가 사정률 산포(0.49%p)보다 컸고, 그 결과 하한가와의
+ * 거리가 0.76%p 로 흩어져 65% 가 무효였다. 조준을 한 자리에 고정하면 산포는 제도가
+ * 정한 σ 로 줄어든다.
+ *
+ * 어느 자리에 고정할지는 발주처가 정한다: 국가계약법(±2%)과 지방계약법(±3%)은
+ * 사정률 σ 가 다르고(`app/engine/contract_law.py`), σ 가 다르면 같은 조준의 무효율과
+ * 기대 낙찰이 다르다. 그래서 0.1%p 격자 위에서 **무효까지 반영한 기대 낙찰**이 최대인
+ * 조준을 고른다. 동률이면 높은 쪽 — 같은 기대값이면 무효가 적고 비싸게 받는다.
+ *
+ * `findBestWinRateBin` 과의 차이: 그쪽은 "과거 낙찰이 가장 잦았던 칸"(사실상 항상 0.0)
+ * 이고 발주처가 반영되지 않는다. 이 함수는 그 칸 분포 위에 발주처 σ 의 착지 분포를
+ * 얹어 조준을 정한다. σ 를 모르면 null — 호출부는 `findBestWinRateBin` 으로 물러난다.
+ */
+export function findBestAim(
+  bins: OffsetBucket[],
+  basePrice: number,
+  lowerLimitRate: number,
+  aValue: number,
+  prepriceSdPct: number,
+): BestAim | null {
+  if (!bins.length || !(basePrice > 0) || !(prepriceSdPct > 0)) return null;
+
+  let best: { aim: number; win: number; sd: number } | null = null;
+  for (let i = 0; i <= Math.round(AIM_GRID_MAX_PCT * 10); i++) {
+    const aim = i / 10;
+    const sd = landingSdPct(prepriceSdPct, lowerLimitRate, basePrice, aValue, aim);
+    const win = expectedWinRate(bins, aim, sd);
+    // 부동소수점 잔차로 동률이 깨지지 않게 1e-9 안이면 같은 값으로 본다 → 높은 조준 우선
+    if (best === null || win > best.win + 1e-9 || Math.abs(win - best.win) <= 1e-9) {
+      best = { aim, win, sd };
+    }
+  }
+  if (best === null || !(best.win > 0)) return null;
+
+  const a = normalizeAValue(aValue, basePrice);
+  return {
+    offset_pct: best.aim,
+    estimated_price: Math.round((basePrice - a) * (lowerLimitRate + best.aim / 100) + a),
+    expected_win_pct: best.win,
+    invalid_pct: invalidProbability(best.aim, best.sd),
+    landing_sd_pct: best.sd,
+  };
+}
