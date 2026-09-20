@@ -58,3 +58,13 @@ def test_row_without_notice_no_is_skipped():
     row = list(ROW)
     row[1] = "공고번호 없는 행"
     assert parse_final_award_row(row, None) is None
+
+
+def test_military_notice_no_gets_open_year():
+    # 국방부형 번호(LPK0148-1)는 해마다 재사용되므로 개찰 연도를 붙인다 (T-037)
+    row = [*ROW]
+    row[1] = "26-신-08 00부대 간부목욕탕 신축 [LPK0148-1]"
+    row[3] = "26.09.08"
+    r = parse_final_award_row(row, None)
+    assert r.project_id == "LPK0148-1@2026"
+    assert r.open_date == date(2026, 9, 8)

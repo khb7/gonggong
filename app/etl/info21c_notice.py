@@ -13,6 +13,8 @@ info21c 개찰 전 공고 상세(/bid/view/con/{id}) 텍스트 파서.
 
 from __future__ import annotations
 
+from app.etl.project_id import canonical_project_id
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,7 +113,7 @@ def parse_open_notice_text(text: str) -> OpenNotice:
         price_method = "기타"
 
     return OpenNotice(
-        project_id=pid,
+        project_id=canonical_project_id(pid, _dt_after("개찰일시", text)),
         notice_title=_title(text),
         client_name=_after("발주기관", text),
         demand_org=_after("수요기관", text),

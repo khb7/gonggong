@@ -155,3 +155,18 @@ def test_is_valid_region_잘린_기관명():
 
 def test_is_valid_region_국군():
     assert is_valid_region("국군") is False
+
+
+# ── project_id 정규화 (T-037) ────────────────────────────────────────────────
+
+def test_military_notice_no_gets_open_year():
+    # 국방부형 번호는 해마다 재사용된다. 개찰 연도를 붙여야 다른 해 공고와 안 섞인다
+    row = {**BASE_ROW, "입찰공고번호": "LPK0148-1", "투찰일자": "2026-09-08"}
+    df = extract_and_transform(make_csv([row]))
+    assert df.iloc[0]["project_id"] == "LPK0148-1@2026"
+
+
+def test_g2b_notice_no_untouched():
+    row = {**BASE_ROW, "입찰공고번호": "R26BK01705597-000"}
+    df = extract_and_transform(make_csv([row]))
+    assert df.iloc[0]["project_id"] == "R26BK01705597-000"

@@ -317,8 +317,8 @@ async def update_bid_type_and_method(project_id: str, bid_type: str, price_metho
             await session.commit()
 
 
-async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
-    """참여자 Excel -> DB 적재. 삽입한 참여자 행 수 반환.
+async def load_participants_to_db(excel_path: Path, project_id: str) -> tuple[int, str]:
+    """참여자 Excel -> DB 적재. (삽입한 참여자 행 수, 저장에 쓴 project_id) 반환.
 
     파싱은 `app.etl.participant_excel`, 쓰기는 `app.db.crud_collect` 가 한다 (T-035).
     한 장에서 참여자 행(업체 식별자 포함) 외에 추정가격과 복수예가 15개도 같이 꺼낸다.
@@ -337,14 +337,17 @@ async def load_participants_to_db(excel_path: Path, project_id: str) -> int:
         wb = parse_participant_workbook(excel_path)
     except Exception as e:
         print(f"    [!] Excel 읽기 실패: {e}")
-        return 0
+        return 0, project_id
     if not wb.rows:
         print(f"    [!] 참여자 행을 찾을 수 없음")
-        return 0
+        return 0, project_id
 
+    # 상세 페이지의 공고번호에는 연도가 없다. Excel 헤더의 개찰일시로 정규화한다 (T-037).
+    from app.etl.project_id import canonical_project_id
+    pid = canonical_project_id(project_id, wb.open_at)
     async with AsyncSessionLocal() as session:
-        res = await save_participant_workbook(session, wb, project_id=project_id)
-    return res.participants_inserted
+        res = await save_participant_workbook(session, wb, project_id=pid)
+    return res.participants_inserted, pid
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
@@ -417,22 +420,21 @@ async def run(
 
                 print(f"  bid_type={info['bid_type']}, price_method={info['price_method']}")
 
-                # 2. bids_history DB 업데이트
                 g2b_id = info.get("g2b_notice_id")
-                if g2b_id:
-                    await update_bid_type_and_method(g2b_id, info["bid_type"], info["price_method"])
 
-                # 3. 참여자 Excel 다운로드
+                # 2. 참여자 Excel 다운로드
                 excel_path = await download_excel(page, context, bidid)
                 if not excel_path:
                     log_result(bidid, "ERR", "Excel 다운 실패")
                     total_err += 1
                     continue
 
-                # 4. DB 적재
+                # 3. DB 적재 + bids_history 갱신. 국방부형 번호는 개찰 연도가 붙어야
+                #    맞는 공고를 가리키므로 Excel 을 읽은 뒤에 갱신한다 (T-037).
                 if g2b_id:
-                    n = await load_participants_to_db(excel_path, g2b_id)
-                    print(f"  -> 참여자 {n}건 적재")
+                    n, pid = await load_participants_to_db(excel_path, g2b_id)
+                    print(f"  -> 참여자 {n}건 적재 ({pid})")
+                    await update_bid_type_and_method(pid, info["bid_type"], info["price_method"])
 
                 log_result(bidid, "OK", f"{info['bid_type']} / {info['price_method']}")
                 done.add(bidid)

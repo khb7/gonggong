@@ -10,6 +10,8 @@ info21c 최종낙찰현황(/suc/last/con) 표 행 파서.
 
 from __future__ import annotations
 
+from app.etl.project_id import canonical_project_id
+
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -58,7 +60,7 @@ def parse_final_award_row(cells: list[str], link: str | None) -> FinalAward | No
         lm = re.search(r"/suc/view/con/([^?&\"'/]+)", link)
         bidid = lm.group(1) if lm else None
     return FinalAward(
-        project_id=m.group(1),
+        project_id=canonical_project_id(m.group(1), _date(cells[3])),
         notice_title=title_cell[: m.start()].strip() or None,
         client_name=cells[2].strip() or None,
         open_date=_date(cells[3]),

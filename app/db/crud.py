@@ -214,5 +214,22 @@ async def get_participant_collected_dates(
 
 
 async def get_open_notice(db: AsyncSession, project_id: str) -> BidNoticeOpen | None:
-    """개찰 전 공고 (info21c 수집분). 없으면 None → 호출측이 G2B 로 넘어간다 (T-035)."""
-    return await db.get(BidNoticeOpen, project_id.strip())
+    """개찰 전 공고 (info21c 수집분). 없으면 None → 호출측이 G2B 로 넘어간다 (T-035).
+
+    국방부형 번호(`LPK0148-1`)는 개찰 연도가 붙어 저장된다 (T-037). 사용자가 연도 없이
+    넣으면 가장 최근 연도의 공고를 돌려준다 — 개찰 전 공고는 사실상 올해 것뿐이다.
+    """
+    from app.etl.project_id import lookup_pattern
+
+    row = await db.get(BidNoticeOpen, project_id.strip())
+    if row is not None:
+        return row
+    pattern = lookup_pattern(project_id)
+    if pattern is None:
+        return None
+    return (await db.execute(
+        select(BidNoticeOpen)
+        .where(BidNoticeOpen.project_id.like(pattern))
+        .order_by(BidNoticeOpen.project_id.desc())
+        .limit(1)
+    )).scalar_one_or_none()

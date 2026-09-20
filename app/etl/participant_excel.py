@@ -13,6 +13,8 @@ info21c 참여자 Excel 파서.
 
 from __future__ import annotations
 
+from app.etl.project_id import canonical_project_id
+
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -237,7 +239,8 @@ def parse_participant_workbook(path: str | Path) -> ParticipantWorkbook:
             open_at = None
 
     return ParticipantWorkbook(
-        project_id=h.get("공고번호", "").strip(),
+        # 국방부형 번호는 개찰 연도를 붙여야 유일하다 (T-037)
+        project_id=canonical_project_id(h.get("공고번호", ""), open_at),
         notice_title=h.get("공고명"),
         client_name=h.get("발주기관"),
         region=h.get("지역"),

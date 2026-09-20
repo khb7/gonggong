@@ -32,6 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import pandas as pd
 from sqlalchemy import select
 
+from app.etl.project_id import canonical_project_id
 from app.db.session import AsyncSessionLocal
 from app.db.models import BidsHistory, BidLicenseType, BidTag
 from app.db.normalize import parse_license_types
@@ -309,7 +310,8 @@ def extract_and_transform(file_path: Path) -> pd.DataFrame:
                 g2b_code = g2b_code[:50]
 
             records.append({
-                "project_id":       str(row["입찰공고번호"]).strip(),
+                # 국방부형 번호는 해마다 재사용되므로 개찰 연도를 붙인다 (T-037)
+                "project_id":       canonical_project_id(str(row["입찰공고번호"]), bid_date),
                 "client_name":      str(row.get("수요기관", "")).strip() or None,
                 "client_id":        str(row.get("수요기관사업자등록번호", "")).strip() or None,
                 "region":           normalize_region(row.get("수요기관지역", "")),
