@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { TermHint } from "@/components/TermHint";
 import { Loader2, ChevronDown, ChevronUp, ClipboardPaste } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -63,7 +64,7 @@ function parsePrepriceRate(text: string): number | null {
   return v / 100;
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
       <label className="text-xs text-muted-foreground font-medium">{label}</label>
@@ -241,7 +242,7 @@ export default function BidCalculator() {
               onChange={(e) => setProjectType(e.target.value)}
             />
           </Field>
-          <Field label="기초금액 (원)">
+          <Field label={<TermHint term="base_price">기초금액 (원)</TermHint>}>
             <Input
               type="number"
               placeholder="예: 500000000"
@@ -249,7 +250,7 @@ export default function BidCalculator() {
               onChange={(e) => setBasePrice(e.target.value)}
             />
           </Field>
-          <Field label="하한율">
+          <Field label={<TermHint term="lower_limit_rate">하한율</TermHint>}>
             <Input
               type="number"
               placeholder="예: 0.89745"
@@ -258,13 +259,12 @@ export default function BidCalculator() {
               step="0.00001"
             />
           </Field>
-          <Field label="A값 (원)">
+          <Field label={<TermHint term="a_value">A값 (원)</TermHint>}>
             <Input
               type="number"
               placeholder="공고에 [A값] 있으면 입력"
               value={aValue}
               onChange={(e) => setAValue(e.target.value)}
-              title="투찰율 적용에서 제외되는 법정경비 합계(국민연금·건강보험·산업안전보건관리비 등). 공고문에 공개된다."
             />
           </Field>
           <Field label="참여업체 수">
@@ -275,14 +275,13 @@ export default function BidCalculator() {
               onChange={(e) => setParticipants(e.target.value)}
             />
           </Field>
-          <Field label="사정률 (%)">
+          <Field label={<TermHint term="preprice_rate">사정률 (%)</TermHint>}>
             <Input
               type="number"
               placeholder="비우면 100.15"
               value={prepriceRate}
               onChange={(e) => setPrepriceRate(e.target.value)}
               step="0.01"
-              title="예정가격 ÷ 기초금액. 예측값이 아니라 선택이다 — 실제 사정률보다 높아야 투찰가가 하한가 위에 놓인다. 비우면 고정값 100.15% 를 쓴다."
             />
           </Field>
         </div>
@@ -326,7 +325,7 @@ export default function BidCalculator() {
                   </span>
                 </div>
                 <div>
-                  <span className="text-muted-foreground">사정률 산포: </span>
+                  <span className="text-muted-foreground"><TermHint term="preprice_spread">사정률 산포</TermHint>: </span>
                   <span className="font-mono text-xs">
                     ±{(result.mad_value * 100).toFixed(2)}%p
                   </span>
@@ -380,14 +379,14 @@ export default function BidCalculator() {
                 <>
                   <div className="grid grid-cols-2 gap-3 text-center">
                     <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/40 py-2">
-                      <p className="text-xs text-muted-foreground">유효 (하한가 이상)</p>
+                      <p className="text-xs text-muted-foreground"><TermHint term="valid_rate">유효 (하한가 이상)</TermHint></p>
                       <p className="text-xl font-bold font-mono text-emerald-700 dark:text-emerald-400">
                         {(outcome.valid * 100).toFixed(1)}%
                       </p>
                       <p className="text-[11px] text-muted-foreground">실제 사정률이 이 값 이하였던 공고</p>
                     </div>
                     <div className="rounded-md bg-primary/5 py-2">
-                      <p className="text-xs text-muted-foreground">근접 (하한선 {(NEAR_WIDTH * 100).toFixed(2)}%p 안)</p>
+                      <p className="text-xs text-muted-foreground"><TermHint term="near_rate">근접 (하한선 {(NEAR_WIDTH * 100).toFixed(2)}%p 안)</TermHint></p>
                       <p className="text-xl font-bold font-mono text-primary">
                         {(outcome.near * 100).toFixed(1)}%
                       </p>
@@ -453,7 +452,7 @@ export default function BidCalculator() {
                       {LABEL_MAP[bid.label] ?? bid.label}
                     </p>
                     <p className="text-2xl font-bold">{formatNumber(bid.price_krw)}원</p>
-                    <p className="text-lg text-primary">{bid.rate_pct}%</p>
+                    <p className="text-lg text-primary"><TermHint term="bid_rate_pct">{bid.rate_pct}%</TermHint></p>
                     <p className="text-[11px] text-muted-foreground">
                       (기초금액 × {(result.predicted_rate * 100).toFixed(2)}% − A값) × 하한율 + A값
                     </p>

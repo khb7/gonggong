@@ -208,7 +208,7 @@ describe("BidCalculator", () => {
     fireEvent.change(screen.getByPlaceholderText("비우면 100.15"), { target: { value: "100.3" } });
     // c=100.30% → 전부 유효, 근접 (100.20, 100.30] 에 1건
     // ("100.0%" 는 x축 눈금에도 찍히므로 라벨 옆 숫자로 본다)
-    expect(screen.getByText("유효 (하한가 이상)").nextElementSibling).toHaveTextContent("100.0%");
+    expect(screen.getByText("유효 (하한가 이상)").closest("p")!.nextElementSibling).toHaveTextContent("100.0%");
     expect(screen.getByText("25.0%")).toBeInTheDocument();
     // 투찰가는 아직 100.15 로 계산된 값 — 다시 계산하라고 알린다
     expect(screen.getByText(/다시 눌러/)).toBeInTheDocument();

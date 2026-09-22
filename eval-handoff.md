@@ -30,3 +30,22 @@
   낙찰은 경쟁자 분포 문제라 분포 화면(/)의 영역이다. 이 카드는 유효/무효와 하한선 거리만 말한다.
 - 히스토그램 조회는 요청마다 DB 를 읽는다 (16k 행, 51ms). 캐시 안 넣었다 — 계산 화면은 호출 빈도가 낮다.
 - 브라우저 pane 스크린샷이 불안정해 그래프는 DOM(막대 180개, 세로선 1개, 눈금 97.7~102.1%)으로만 확인했다.
+
+---
+
+# Handoff — 용어 ⓘ 툴팁 (TermHint + glossary) — 2026-09-22
+
+## 변경한 파일
+- `frontend/src/lib/glossary.ts` — **신규**. 용어 사전 한 곳 (뜻 / 산식 / 왜). 14개 용어
+- `frontend/src/components/TermHint.tsx` — **신규**. 라벨 옆 ⓘ 아이콘 + Radix Tooltip. 클릭 토글을 얹어 터치에서도 열린다. Provider 를 품어 어디서나 동작
+- `frontend/src/pages/BidCalculator.tsx` — 기초금액·하한율·A값·사정률·사정률 산포·유효·근접·예정가격 대비 비율에 부착. `Input title=` 제거
+- `frontend/src/pages/BidDistribution.tsx` — 기초금액·하한율·A값·기대 낙찰·무효 확률·내 offset·공격성·과거 낙찰 빈도·낙찰 집중 구간에 부착
+- `frontend/src/components/TermHint.test.tsx` — 열기 전 숨김 / 클릭으로 열림·닫힘 / 사전 항목 완결성
+
+## Eval 에이전트가 확인해야 할 포인트
+- `/calculator`, `/` 두 화면에서 라벨 옆 ⓘ 에 마우스를 올리면 제목·정의·산식(monospace)·비고 순서로 뜬다. 클릭해도 열리고 다시 클릭하면 닫힌다.
+- 두 화면의 같은 용어(기초금액·하한율·A값)가 같은 문구다.
+- 정의가 제도와 맞는지: `md/reference/공공입찰_제도_가이드.md`, `md/design/bid_rate_definitions.md` 와 대조.
+
+## 알려진 미해결 사항
+- 툴팁은 스크롤하면 닫힌다 (Radix 기본). 긴 정의를 읽다 스크롤하면 사라진다 — 지금 길이(3줄)에서는 문제 안 됨.

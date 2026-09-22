@@ -22,6 +22,7 @@ import {
   type LocalPosition,
 } from "@/lib/distribution";
 import { parseInfo21cText } from "@/lib/info21c";
+import { TermHint } from "@/components/TermHint";
 import { formatNumber } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -78,7 +79,7 @@ function ChartTooltip({ active, payload, label }: any) {
 
 // ── 레이블 컴포넌트 ──────────────────────────────────────────────────────
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
       <label className="text-xs text-muted-foreground font-medium">{label}</label>
@@ -392,19 +393,18 @@ export default function BidDistribution() {
           <Field label="공종">
             <Input placeholder="예: 실내건축" value={projectType} onChange={(e) => setProjectType(e.target.value)} />
           </Field>
-          <Field label="기초금액 (원)">
+          <Field label={<TermHint term="base_price">기초금액 (원)</TermHint>}>
             <Input type="number" placeholder="예: 500000000" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} />
           </Field>
-          <Field label="하한율">
+          <Field label={<TermHint term="lower_limit_rate">하한율</TermHint>}>
             <Input type="number" placeholder="예: 0.89745" value={lowerLimitRate} onChange={(e) => setLowerLimitRate(e.target.value)} step="0.00001" />
           </Field>
-          <Field label="A값 (원)">
+          <Field label={<TermHint term="a_value">A값 (원)</TermHint>}>
             <Input
               type="number"
               placeholder="공고에 [A값] 있으면 입력"
               value={aValue}
               onChange={(e) => setAValue(e.target.value)}
-              title="투찰율 적용에서 제외되는 법정경비 합계. 공고문에 공개된다. 없으면 비워두세요."
             />
           </Field>
         </div>
@@ -490,7 +490,7 @@ export default function BidDistribution() {
                 {winZone && (
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 rounded-sm inline-block bg-emerald-500/15 border border-emerald-500/40" />
-                    낙찰 집중 구간
+                    <TermHint term="win_zone">낙찰 집중 구간</TermHint>
                   </span>
                 )}
                 {myPosLabel && (
@@ -613,11 +613,11 @@ export default function BidDistribution() {
                   </p>
                   {bestAim && (
                     <p className="text-xs mt-1.5">
-                      이 발주처 기준 조준 — 기대 낙찰{" "}
+                      이 발주처 기준 조준 — <TermHint term="expected_win">기대 낙찰</TermHint>{" "}
                       <span className="font-bold text-emerald-700 dark:text-emerald-400">
                         {bestAim.expected_win_pct.toFixed(2)}%
                       </span>
-                      , 무효 확률{" "}
+                      , <TermHint term="invalid_prob">무효 확률</TermHint>{" "}
                       <span className="font-bold text-rose-600 dark:text-rose-400">
                         {bestAim.invalid_pct.toFixed(0)}%
                       </span>
@@ -860,7 +860,7 @@ export default function BidDistribution() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <Card>
                 <CardContent className="p-4 text-center">
-                  <p className="text-xs text-muted-foreground mb-1">내 offset</p>
+                  <p className="text-xs text-muted-foreground mb-1"><TermHint term="offset">내 offset</TermHint></p>
                   <p className={`text-xl font-bold font-mono ${myLocalPos.offset_pct < 0 ? "text-rose-600" : "text-emerald-600"}`}>
                     {myLocalPos.offset_pct > 0 ? "+" : ""}{myLocalPos.offset_pct.toFixed(1)}%
                   </p>
@@ -886,14 +886,14 @@ export default function BidDistribution() {
               </Card>
               <Card>
                 <CardContent className="p-4 text-center">
-                  <p className="text-xs text-muted-foreground mb-1">공격성 (percentile)</p>
+                  <p className="text-xs text-muted-foreground mb-1"><TermHint term="percentile">공격성 (percentile)</TermHint></p>
                   <p className="text-xl font-bold">{myLocalPos.percentile.toFixed(1)}%</p>
                   <p className="text-[10px] text-muted-foreground">내 가격보다 낮은 과거 입찰 비율</p>
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="p-4 text-center">
-                  <p className="text-xs text-muted-foreground mb-1">과거 낙찰 빈도</p>
+                  <p className="text-xs text-muted-foreground mb-1"><TermHint term="historical_win_rate">과거 낙찰 빈도</TermHint></p>
                   {myLocalPos.historical_win_rate == null ? (
                     <>
                       <p className="text-xl font-bold text-muted-foreground">—</p>
