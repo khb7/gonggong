@@ -25,6 +25,15 @@ class BidOverrides(BaseModel):
         ),
         ge=0,
     )
+    preprice_rate: Decimal | None = Field(
+        None,
+        description=(
+            "사정률(예정가격/기초금액)을 직접 지정한다. 없으면 고정 상수(100.15%)를 쓴다. "
+            "예측값이 아니라 선택이다 — 실제 사정률보다 높아야 투찰가가 하한가 위에 놓인다. "
+            "복수예비가격 생성범위가 최대 ±3% 라 그 밖은 오타로 본다."
+        ),
+        ge=Decimal("0.97"), le=Decimal("1.03"),
+    )
     client_name: str | None = Field(None, description="발주처명 (예: 부산광역시)")
     client_id: str | None = Field(None, description="나라장터 발주청 코드 (예: 6110000)")
     region: str | None = Field(None, description="지역명 (예: 서울, 경기)")

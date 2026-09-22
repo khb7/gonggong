@@ -185,6 +185,20 @@ async def get_all_rates(
     return [row[0] for row in result.fetchall()]
 
 
+async def get_preprice_rates(db: AsyncSession) -> list[tuple[str | None, Decimal]]:
+    """과거 공고의 (발주처명, 실제 사정률) 전부.
+
+    `preprice_rate` = 예정가격/기초금액 (중앙 0.9993). `adjustment_rate` 가 아니다.
+    계약법 판별은 발주처명으로 파이썬에서 하므로 이름을 같이 가져온다.
+    12,000행 남짓이라 그대로 가져와도 된다 (참여자 표 460만 행과는 다르다).
+    """
+    result = await db.execute(
+        select(BidsHistory.client_name, BidsHistory.preprice_rate)
+        .where(BidsHistory.preprice_rate.is_not(None))
+    )
+    return [(row[0], row[1]) for row in result.fetchall()]
+
+
 async def get_participant_collected_dates(
     db: AsyncSession,
     start_date: date,

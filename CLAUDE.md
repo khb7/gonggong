@@ -20,7 +20,9 @@ POST /api/v1/bid/distribution
 ```
 
 `POST /api/v1/bid/calculate` (사정률 기반 투찰가 계산)은 **동결 상태**로 유지된다.
-신규 기능은 여기에 붙이지 않는다.
+신규 기능은 여기에 붙이지 않는다. 예외로 T-038 에서 사정률 직접 입력(`overrides.preprice_rate`)과
+과거 실제 사정률 분포 동봉(`preprice_histogram`)만 넣었다 — 예측이 아니라 사용자의 선택이
+과거 공고에서 어땠을지를 보이는 것이라 방향과 충돌하지 않는다.
 
 ---
 
@@ -76,7 +78,7 @@ A값을 빼먹고 `예정가격 × 하한율`로 계산하면 **하한가 미달
 app/
 ├── api/v1/
 │   ├── distribution.py     # POST /bid/distribution  ← 주 경로
-│   ├── bidding.py          # POST /bid/calculate     ← 동결
+│   ├── bidding.py          # POST /bid/calculate     ← 동결 (T-038 사정률 입력만 예외)
 │   ├── stats.py            # 관리 대시보드
 │   └── admin.py            # CSV 업로드
 ├── core/config.py          # 환경변수 설정 (DATABASE_URL, G2B_API_KEY)
@@ -90,6 +92,7 @@ app/
 ├── engine/
 │   ├── distribution.py     # offset 히스토그램, 내 위치 계산  ← 주 경로
 │   ├── a_value.py          # A값 역산·실효 하한율·A값 반영 투찰가
+│   ├── preprice_histogram.py # 과거 실제 사정률 히스토그램 (T-038, 계산 화면 그래프)
 │   ├── statistics.py       # trimmed_median(), mad()
 │   ├── digit_filter.py     # 끝자리 블랙리스트 회피
 │   ├── calculator.py       # (동결) 투찰가 계산

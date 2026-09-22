@@ -18,6 +18,20 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 // Types
+
+/**
+ * 과거 공고의 실제 사정률 히스토그램 (T-038). 사용자가 고른 사정률이 과거
+ * 공고에서 어땠을지 보여주는 재료 — 계산은 `lib/preprice.ts` 가 한다.
+ */
+export interface PrepriceHistogram {
+  /** 어느 계약법 공고를 모았나. unknown 이면 전체 */
+  law: "national" | "local" | "agency" | "unknown";
+  n: number;
+  bin_start: number;
+  bin_width: number;
+  counts: number[];
+}
+
 export interface BidResult {
   bid_notice_id: string;
   mode: "auto" | "override";
@@ -35,7 +49,8 @@ export interface BidResult {
   base_price: number;
   strategy: "safe" | "normal" | "aggressive";
   /**
-   * 투찰가 계산에 쓴 사정률. 예측이 아니라 전역 고정 상수(100.15%)다 — T-015.
+   * 투찰가 계산에 쓴 사정률. 예측이 아니다 — 전역 고정 상수(100.15%, T-015)거나
+   * 사용자가 직접 넣은 값(T-038)이다.
    * **분포의 중심이 아니다.** 하한가 미달을 피하려고 위로 올려 잡은 안전 여유값이라,
    * 이 값을 중심으로 예정가격 범위를 그리면 안 된다. 중심은 1.0 이다.
    */
@@ -47,7 +62,9 @@ export interface BidResult {
   /** [lower, upper] = predicted_rate ± MAD. 중심이 고정 사정률이라 표시용으로는 쓰지 않는다 */
   prediction_range: [number, number];
   confidence_grade: "high" | "medium" | "low";
+  /** 사정률의 출처. "fixed"(고정 상수) | "override"(직접 입력) */
   fallback_level: string;
+  preprice_histogram: PrepriceHistogram;
   bids: {
     label: string;
     rate_pct: number;

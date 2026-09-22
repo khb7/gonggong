@@ -28,6 +28,20 @@ class FetchedData(BaseModel):
     participants: int
 
 
+class PrepriceHistogramOut(BaseModel):
+    """과거 공고의 실제 사정률 히스토그램 (T-038).
+
+    사용자가 고른 사정률 c 가 과거 공고에서 어땠을지 보여주는 재료다.
+    투찰가 유효 조건은 `c ≥ 실제 사정률` 하나뿐이라, 분포 위에 c 를 그으면
+    왼쪽이 유효·오른쪽이 무효다. 유효율·근접률은 프론트가 이 개수로 계산한다.
+    """
+    law: str = Field(..., description="어느 계약법 공고를 모았나. unknown 이면 전체")
+    n: int = Field(..., description="표본 공고 수")
+    bin_start: float = Field(..., description="첫 bin 의 하한 (0.970)")
+    bin_width: float = Field(..., description="bin 폭 (0.0005 = 0.05%p)")
+    counts: list[int] = Field(..., description="bin 별 공고 수 (120개)")
+
+
 class BidResponse(BaseModel):
     """투찰가 계산 최종 응답."""
     bid_notice_id: str
@@ -50,7 +64,8 @@ class BidResponse(BaseModel):
     predicted_rate: float = Field(
         ...,
         description=(
-            "투찰가 계산에 쓴 사정률. 예측값이 아니라 전역 고정 상수다 (T-015). "
+            "투찰가 계산에 쓴 사정률. 예측값이 아니다 — 전역 고정 상수(T-015)거나 "
+            "사용자가 직접 넣은 값(T-038)이다. "
             "분포의 중심이 아니라 하한가 미달을 피하기 위한 안전 여유값이다."
         ),
     )
@@ -66,6 +81,12 @@ class BidResponse(BaseModel):
     )
     prediction_range: list[float] = Field(..., description="예측 구간 [lower, upper] = predicted_rate ± MAD")
     confidence_grade: str = Field(..., description='신뢰도 등급. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')
-    fallback_level: str = Field(..., description='사용된 Fallback 레벨. 사정률 예측을 끈 뒤로는 항상 "fixed" 다 (T-015)')
+    fallback_level: str = Field(
+        ...,
+        description='사정률의 출처. "fixed"(고정 상수, T-015) | "override"(직접 입력, T-038)',
+    )
+    preprice_histogram: PrepriceHistogramOut = Field(
+        ..., description="같은 계약법 공고의 실제 사정률 히스토그램 (T-038)"
+    )
 
     bids: list[BidItem] = Field(..., description="추천 투찰가 목록 (Aggressive → Safe)")

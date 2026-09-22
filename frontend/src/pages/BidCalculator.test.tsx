@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { cloneElement, type ReactElement } from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+
+// ── recharts ResponsiveContainer 는 jsdom 에서 크기가 0 이라 아무것도 그리지 않는다.
+//    고정 크기를 주입해 실제 SVG 가 렌더되게 한다.
+vi.mock("recharts", async () => {
+  const actual = await vi.importActual<typeof import("recharts")>("recharts");
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: ReactElement }) =>
+      cloneElement(children, { width: 800, height: 200 }),
+  };
+});
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -9,8 +21,22 @@ vi.mock("@/lib/api", async () => {
 import { calculateBid, type BidResult } from "@/lib/api";
 import BidCalculator from "@/pages/BidCalculator";
 
+// 과거 실제 사정률 표본 (bin 폭 0.05%p, 97%~103%).
+// 99.90 에 2건, 100.10 에 1건, 100.25 에 1건 → c=100.15% 면 3/4 유효, 근접 1/4.
+function makeHistogram(): BidResult["preprice_histogram"] {
+  const counts = new Array(120).fill(0);
+  const put = (rate: number, n: number) => {
+    counts[Math.round((rate - 0.97) / 0.0005)] += n;
+  };
+  put(0.999, 2);
+  put(1.001, 1);
+  put(1.0025, 1);
+  return { law: "local", n: 4, bin_start: 0.97, bin_width: 0.0005, counts };
+}
+
 function makeResult(over: Partial<BidResult> = {}): BidResult {
   return {
+    preprice_histogram: makeHistogram(),
     bid_notice_id: "R25BK00678040",
     mode: "auto",
     overridden_fields: [],
@@ -134,5 +160,70 @@ describe("BidCalculator", () => {
     // 백엔드 필드명이 digit_filter_triggered 라 이전에는 한 번도 안 떴다
     expect(screen.getByText("끝자리 회피 적용됨")).toBeInTheDocument();
     expect(screen.getByText("A값 12,000,000원 반영")).toBeInTheDocument();
+  });
+
+  // ── 사정률 직접 입력 + 과거 분포 (T-038) ──────────────────────────────
+
+  it("사정률 칸을 비우면 보내지 않는다 — 서버 고정값을 쓴다", async () => {
+    vi.mocked(calculateBid).mockResolvedValue(makeResult());
+    render(<BidCalculator />);
+    await calculate();
+
+    const [, overrides] = vi.mocked(calculateBid).mock.calls[0];
+    expect(overrides.preprice_rate).toBeNull();
+  });
+
+  it("사정률을 % 로 넣으면 소수로 바꿔 보낸다", async () => {
+    vi.mocked(calculateBid).mockResolvedValue(
+      makeResult({ predicted_rate: 1.005, fallback_level: "override" }),
+    );
+    render(<BidCalculator />);
+    fireEvent.change(screen.getByPlaceholderText("비우면 100.15"), { target: { value: "100.5" } });
+    await calculate();
+
+    const [, overrides] = vi.mocked(calculateBid).mock.calls[0];
+    expect(overrides.preprice_rate).toBeCloseTo(1.005);
+    // 산식 안내줄이 입력값으로 바뀐다
+    expect(screen.getAllByText(/100\.50%/).length).toBeGreaterThan(0);
+  });
+
+  it("과거 분포 위에 고른 사정률의 유효율·근접률을 보인다", async () => {
+    vi.mocked(calculateBid).mockResolvedValue(makeResult());
+    const { container } = render(<BidCalculator />);
+    await calculate();
+
+    // 지방계약 4건 표본, c=100.15% → 유효 3/4, 근접 (100.05, 100.15] 에 1건
+    expect(screen.getByText(/지방계약 ±3% 공고 4건/)).toBeInTheDocument();
+    expect(screen.getByText("75.0%")).toBeInTheDocument();
+    expect(screen.getByText("25.0%")).toBeInTheDocument();
+    expect(container.querySelectorAll(".recharts-bar").length).toBeGreaterThan(0);
+  });
+
+  it("계산 뒤 사정률 칸을 바꾸면 그래프 숫자는 즉시, 투찰가는 다시 눌러야 바뀐다", async () => {
+    vi.mocked(calculateBid).mockResolvedValue(makeResult());
+    render(<BidCalculator />);
+    await calculate();
+    expect(screen.getByText("75.0%")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("비우면 100.15"), { target: { value: "100.3" } });
+    // c=100.30% → 전부 유효, 근접 (100.20, 100.30] 에 1건
+    // ("100.0%" 는 x축 눈금에도 찍히므로 라벨 옆 숫자로 본다)
+    expect(screen.getByText("유효 (하한가 이상)").nextElementSibling).toHaveTextContent("100.0%");
+    expect(screen.getByText("25.0%")).toBeInTheDocument();
+    // 투찰가는 아직 100.15 로 계산된 값 — 다시 계산하라고 알린다
+    expect(screen.getByText(/다시 눌러/)).toBeInTheDocument();
+    expect(screen.getByText("871,450,000원")).toBeInTheDocument();
+  });
+
+  it("표본이 없으면 비율 대신 없다고 말한다", async () => {
+    vi.mocked(calculateBid).mockResolvedValue(
+      makeResult({
+        preprice_histogram: { law: "national", n: 0, bin_start: 0.97, bin_width: 0.0005, counts: new Array(120).fill(0) },
+      }),
+    );
+    render(<BidCalculator />);
+    await calculate();
+    expect(screen.getByText(/표본이 없/)).toBeInTheDocument();
+    expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
   });
 });

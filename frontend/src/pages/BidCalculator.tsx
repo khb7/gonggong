@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
+} from "recharts";
 import { calculateBid, type BidResult } from "@/lib/api";
 import { parseInfo21cText } from "@/lib/info21c";
+import { prepriceOutcome, prepriceChartData, NEAR_WIDTH } from "@/lib/preprice";
 import { formatNumber } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,6 +53,16 @@ const STRATEGY_TO_LABEL: Record<string, string> = {
   safe: "Safe",
 };
 
+/**
+ * 사정률 입력칸(%)을 소수로. 비었거나 숫자가 아니면 null — 서버 고정값을 쓴다.
+ * 범위 검증은 서버가 한다 (0.97~1.03 밖은 422).
+ */
+function parsePrepriceRate(text: string): number | null {
+  const v = Number(text);
+  if (!text.trim() || !Number.isFinite(v) || v <= 0) return null;
+  return v / 100;
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
@@ -67,6 +81,8 @@ export default function BidCalculator() {
   const [lowerLimitRate, setLowerLimitRate] = useState("");
   const [aValue, setAValue] = useState("");
   const [participants, setParticipants] = useState("");
+  // 사정률 (%). 비우면 서버 고정값 100.15. 예측이 아니라 선택이다 (T-038).
+  const [prepriceRate, setPrepriceRate] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<BidResult | null>(null);
   const [pasteOpen, setPasteOpen] = useState(false);
@@ -106,6 +122,7 @@ export default function BidCalculator() {
         lower_limit_rate: lowerLimitRate ? Number(lowerLimitRate) : null,
         a_value: aValue ? Number(aValue) : null,
         participants: participants ? Number(participants) : null,
+        preprice_rate: parsePrepriceRate(prepriceRate),
         client_name: clientName || null,
         region: region || null,
         project_type: projectType || null,
@@ -126,6 +143,23 @@ export default function BidCalculator() {
       setLoading(false);
     }
   };
+
+  // 그래프에 긋는 사정률. 입력칸을 바꾸면 계산 없이 즉시 움직인다 — 분포는
+  // 이미 응답에 실려 있고 유효율·근접률은 그 위에서 세는 것뿐이라서다.
+  // 투찰가는 서버 값이라 `result.predicted_rate` 로 계산된 채 남는다.
+  const chartRate = parsePrepriceRate(prepriceRate) ?? result?.predicted_rate ?? null;
+  const chartStale =
+    result !== null && chartRate !== null && Math.abs(chartRate - result.predicted_rate) > 1e-9;
+  const outcome = useMemo(
+    () => (result && chartRate !== null ? prepriceOutcome(result.preprice_histogram, chartRate) : null),
+    [result, chartRate],
+  );
+  const chartData = useMemo(
+    () => (result && chartRate !== null ? prepriceChartData(result.preprice_histogram, chartRate) : []),
+    [result, chartRate],
+  );
+  // 세로선을 놓을 bin: c 가 들어 있는 bin 의 x 라벨 (카테고리 축이라 값이 정확히 맞아야 그려진다)
+  const chartRateBin = chartData.find((r) => chartRate !== null && r.rate_pct + 0.05 > chartRate * 100)?.rate_pct;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -241,6 +275,16 @@ export default function BidCalculator() {
               onChange={(e) => setParticipants(e.target.value)}
             />
           </Field>
+          <Field label="사정률 (%)">
+            <Input
+              type="number"
+              placeholder="비우면 100.15"
+              value={prepriceRate}
+              onChange={(e) => setPrepriceRate(e.target.value)}
+              step="0.01"
+              title="예정가격 ÷ 기초금액. 예측값이 아니라 선택이다 — 실제 사정률보다 높아야 투찰가가 하한가 위에 놓인다. 비우면 고정값 100.15% 를 쓴다."
+            />
+          </Field>
         </div>
 
         <p className="text-xs text-muted-foreground">
@@ -305,6 +349,95 @@ export default function BidCalculator() {
               </p>
             </CardContent>
           </Card>
+
+          {/*
+            고른 사정률이 과거 공고에서 어땠나 (T-038).
+            투찰가 유효 조건은 `c ≥ 실제 사정률` 하나뿐이다. 그래서 예측 대신
+            같은 계약법 공고의 실제 사정률 분포 위에 c 를 긋는다 — 왼쪽이 유효,
+            오른쪽이 무효. 근접은 c 바로 아래 0.10%p 안에 있던 공고로, 유효하면서
+            낙찰선에 붙어 있던 경우다. c 를 올리면 유효율↑ 근접률↓ — 이 trade-off 가
+            이 카드가 보여주는 전부다.
+          */}
+          {chartRate !== null && (
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <p className="text-sm font-medium">
+                  사정률 <span className="font-mono">{(chartRate * 100).toFixed(2)}%</span> 로 넣었다면 —{" "}
+                  <span className="text-muted-foreground font-normal">
+                    {LAW_LABEL[result.preprice_histogram.law] ?? "구분 불명"} 공고{" "}
+                    {formatNumber(result.preprice_histogram.n)}건의 실제 사정률 기준
+                  </span>
+                </p>
+                {chartStale && (
+                  <span className="text-xs text-amber-700 dark:text-amber-400">
+                    위 투찰가는 {(result.predicted_rate * 100).toFixed(2)}% 기준 — 계산하기를 다시 눌러야 갱신된다
+                  </span>
+                )}
+              </div>
+
+              {outcome && outcome.valid !== null && outcome.near !== null ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/40 py-2">
+                      <p className="text-xs text-muted-foreground">유효 (하한가 이상)</p>
+                      <p className="text-xl font-bold font-mono text-emerald-700 dark:text-emerald-400">
+                        {(outcome.valid * 100).toFixed(1)}%
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">실제 사정률이 이 값 이하였던 공고</p>
+                    </div>
+                    <div className="rounded-md bg-primary/5 py-2">
+                      <p className="text-xs text-muted-foreground">근접 (하한선 {(NEAR_WIDTH * 100).toFixed(2)}%p 안)</p>
+                      <p className="text-xl font-bold font-mono text-primary">
+                        {(outcome.near * 100).toFixed(1)}%
+                      </p>
+                      <p className="text-[11px] text-muted-foreground">유효하면서 낙찰선에 붙었던 공고</p>
+                    </div>
+                  </div>
+
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={chartData} margin={{ top: 16, right: 8, left: -16, bottom: 0 }} barCategoryGap={1}>
+                      <XAxis
+                        dataKey="rate_pct"
+                        tickFormatter={(v: number) => `${Number(v).toFixed(1)}%`}
+                        tick={{ fontSize: 10 }}
+                        interval="preserveStartEnd"
+                        minTickGap={40}
+                      />
+                      <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                      <Tooltip
+                        formatter={(v: number, name: string) => [Math.round(v), name]}
+                        labelFormatter={(v: number) => `실제 사정률 ${Number(v).toFixed(2)}% ~`}
+                        contentStyle={{ fontSize: 12 }}
+                      />
+                      <Bar dataKey="valid" stackId="a" fill="hsl(142 71% 45%)" name="유효" isAnimationActive={false} />
+                      <Bar dataKey="invalid" stackId="a" fill="hsl(0 84% 60%)" name="무효 (하한가 미달)" isAnimationActive={false} />
+                      {chartRateBin !== undefined && (
+                        <ReferenceLine
+                          x={chartRateBin}
+                          stroke="hsl(222 47% 11%)"
+                          strokeWidth={2}
+                          strokeDasharray="5 3"
+                          label={{ value: "내 사정률", position: "top", fontSize: 10, fontWeight: 600 }}
+                        />
+                      )}
+                    </BarChart>
+                  </ResponsiveContainer>
+
+                  <p className="text-xs text-muted-foreground border-t pt-2">
+                    예측이 아니다. 투찰가가 유효한 조건은 <span className="font-medium">내가 건 사정률 ≥ 실제 사정률</span>{" "}
+                    하나뿐이라, 과거 실제 사정률 분포 위에 내 값을 그은 것이다. 올리면 유효율은 오르지만
+                    낙찰선에서 멀어져 근접률이 떨어진다 — 둘 사이에서 고르는 게 이 칸의 용도다.
+                  </p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  이 계약법 공고의 사정률 표본이 없어 비율을 낼 수 없다.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+          )}
 
           {/* 투찰가 카드 */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

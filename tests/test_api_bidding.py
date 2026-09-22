@@ -29,6 +29,23 @@ async def _mock_db():
 
 app.dependency_overrides[get_db] = _mock_db
 
+# 과거 실제 사정률 표본. AsyncMock DB 는 행을 못 돌려주므로 조회 함수를 고정한다.
+# 국가 2건 / 지방 3건 / 불명 1건 — 계약법별 필터가 실제로 갈리는지 보려고 섞었다.
+_PREPRICE_ROWS = [
+    ("국군재정관리단", Decimal("1.0010")),
+    ("국군재정관리단", Decimal("1.0030")),
+    ("서울특별시", Decimal("0.9970")),
+    ("서울특별시", Decimal("0.9990")),
+    ("경기도 연천군", Decimal("1.0020")),
+    ("???", Decimal("1.0000")),
+]
+
+
+@pytest.fixture(autouse=True)
+def _fixed_preprice_rows():
+    with patch("app.api.v1.bidding.get_preprice_rates", return_value=_PREPRICE_ROWS):
+        yield
+
 
 @pytest.fixture
 def client():
@@ -313,3 +330,66 @@ def test_calculate_unknown_client_falls_back_to_widest_mad(client):
     assert data["mad_value"] == pytest.approx(
         float(contract_law.PREPRICE_MAD["unknown"])
     )
+
+
+# ──────────────────────────────────────────
+# 사정률 직접 입력 + 과거 분포 동봉 (T-038)
+# ──────────────────────────────────────────
+
+def test_calculate_default_preprice_rate_is_fixed_constant(client):
+    from app.api.v1.bidding import FIXED_PREPRICE_RATE
+
+    data = client.post("/api/v1/bid/calculate", json={"bid_notice_id": "TEST-001"}).json()
+    assert data["predicted_rate"] == pytest.approx(float(FIXED_PREPRICE_RATE))
+    assert data["fallback_level"] == "fixed"
+    assert "preprice_rate" not in data["overridden_fields"]
+
+
+def test_calculate_override_preprice_rate_changes_bid(client):
+    """사정률을 직접 넣으면 그 값으로 예정가격을 잡는다 — 투찰가가 같이 움직여야 한다."""
+    def _call(rate):
+        body = {"bid_notice_id": "TEST-001", "overrides": {"preprice_rate": rate}}
+        return client.post("/api/v1/bid/calculate", json=body).json()
+
+    low, high = _call("1.0000"), _call("1.0050")
+    assert low["predicted_rate"] == pytest.approx(1.0)
+    assert high["predicted_rate"] == pytest.approx(1.005)
+    assert low["fallback_level"] == "override"
+    assert "preprice_rate" in low["overridden_fields"]
+    # 예정가격 = 기초 × c 이므로 c 가 크면 투찰가도 크다
+    assert high["bids"][0]["price_krw"] > low["bids"][0]["price_krw"]
+
+
+@pytest.mark.parametrize("rate", ["0.90", "1.10", "0", "-1"])
+def test_calculate_override_preprice_rate_out_of_range_is_422(client, rate):
+    """복수예가 생성범위(±3%)를 한참 벗어난 사정률은 오타다. 받지 않는다."""
+    body = {"bid_notice_id": "TEST-001", "overrides": {"preprice_rate": rate}}
+    assert client.post("/api/v1/bid/calculate", json=body).status_code == 422
+
+
+def test_calculate_returns_preprice_histogram_for_the_contract_law(client):
+    """응답에 같은 계약법 공고의 실제 사정률 히스토그램이 실린다."""
+    from app.engine.preprice_histogram import N_BINS
+
+    # Mock 공고 발주처 "서울특별시" → 지방 3건
+    local = client.post("/api/v1/bid/calculate", json={"bid_notice_id": "TEST-001"}).json()
+    h = local["preprice_histogram"]
+    assert h["law"] == "local"
+    assert h["n"] == 3
+    assert len(h["counts"]) == N_BINS
+    assert sum(h["counts"]) == 3
+    assert h["bin_start"] == pytest.approx(0.970)
+    assert h["bin_width"] == pytest.approx(0.0005)
+
+    national = client.post(
+        "/api/v1/bid/calculate",
+        json={"bid_notice_id": "TEST-001", "overrides": {"client_name": "국군재정관리단"}},
+    ).json()
+    assert national["preprice_histogram"]["law"] == "national"
+    assert national["preprice_histogram"]["n"] == 2
+
+    unknown = client.post(
+        "/api/v1/bid/calculate",
+        json={"bid_notice_id": "TEST-001", "overrides": {"client_name": "???"}},
+    ).json()
+    assert unknown["preprice_histogram"]["n"] == 6

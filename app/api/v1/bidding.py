@@ -12,15 +12,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.crud import TARGET_BID_TYPE
+from app.db.crud import TARGET_BID_TYPE, get_preprice_rates
 from app.db.session import get_db
 from app.db.normalize import normalize_region, normalize_project_type, normalize_bid_type
 from app.db.models import ProjectBucket
 from app.engine import contract_law
 from app.engine.statistics import confidence_range
 from app.engine.calculator import calculate_bid_spread
+from app.engine.preprice_histogram import build_preprice_histogram
 from app.schemas.request import BidRequest
-from app.schemas.response import BidResponse, FetchedData
+from app.schemas.response import BidResponse, FetchedData, PrepriceHistogramOut
 
 router = APIRouter()
 
@@ -57,6 +58,10 @@ router = APIRouter()
 #     재조정 조건은 표본 증가가 아니다 — 자사 투찰이 300건대가 되거나,
 #     주력 발주처 구성이 바뀌거나, 복수예가 생성범위 규정이 개정될 때다.
 #     재현: `python scripts/backtest_bid_rate.py --by-law`
+#
+#   사용자가 `overrides.preprice_rate` 로 건별로 덮어쓸 수는 있다 (T-038). 그건
+#   이 기본값을 옮기는 게 아니라 이 공고 한 건의 선택이고, 그 선택이 과거
+#   공고에서 어땠을지는 응답의 `preprice_histogram` 이 보여준다.
 #
 # 남은 불확실성(사정률 산포)은 여기 상수로 두지 않는다. 복수예비가격 생성범위가
 # 국가 ±2% / 지방 ±3% 로 규정이 갈리므로 발주처마다 다르다.
@@ -126,6 +131,7 @@ async def calculate_bid(
     participants = notice.participants
     # A값은 G2B 개방표준 API에 항목이 없다 → override로만 들어온다.
     a_value = 0
+    preprice_rate: Decimal | None = None
     client_name = notice.client_name
     client_id = notice.client_id
     region = normalize_region(notice.region)
@@ -147,6 +153,9 @@ async def calculate_bid(
         if body.overrides.a_value is not None:
             a_value = body.overrides.a_value
             overridden_fields.append("a_value")
+        if body.overrides.preprice_rate is not None:
+            preprice_rate = body.overrides.preprice_rate
+            overridden_fields.append("preprice_rate")
         if body.overrides.client_name is not None:
             client_name = body.overrides.client_name
             overridden_fields.append("client_name")
@@ -191,8 +200,13 @@ async def calculate_bid(
     # `calculator` 가 이를 `예정가격 = base_price × predicted_rate` 로 쓰므로
     # 예정가격이 13.1% 낮게 추정되고 있었다(10억 공고에서 1.16억). 같이 제거한다.
     # 진짜 사정률은 `bids_history.preprice_rate` 다 (중앙 0.999332).
-    predicted_rate = FIXED_PREPRICE_RATE
-    fallback_level = "fixed"
+    # 사용자가 직접 넣은 값이 있으면 그걸 쓴다 (T-038). 예측이 아니라 선택이다.
+    if preprice_rate is not None:
+        predicted_rate = preprice_rate
+        fallback_level = "override"
+    else:
+        predicted_rate = FIXED_PREPRICE_RATE
+        fallback_level = "fixed"
 
     # ── 5. 사정률 산포 = 계약법에서 연역 (공고마다 다르다) ─
     # 사정률 자체는 고정이지만 그 **산포**는 공고마다 다르다. 복수예비가격
@@ -210,6 +224,11 @@ async def calculate_bid(
     # 사정률 자체의 산포이고, 그건 어떤 방법으로도 줄일 수 없다.
     rate_lower, rate_upper = confidence_range(predicted_rate, mad_val)
     confidence_grade = "fixed"
+
+    # ── 5b. 과거 실제 사정률 분포 (T-038) ────────────────
+    # 고른 사정률이 과거 공고에서 어땠을지는 분포 위에 그어 보면 된다.
+    # 같은 계약법 공고만 모은다 — 생성범위가 달라 산포가 다르기 때문이다.
+    hist = build_preprice_histogram(await get_preprice_rates(db), law)
 
     # ── 6. 투찰가 계산 (Multi-Shot Bid Spread) ──────────
     result = calculate_bid_spread(
@@ -249,5 +268,12 @@ async def calculate_bid(
         prediction_range=[float(rate_lower), float(rate_upper)],
         confidence_grade=confidence_grade,
         fallback_level=fallback_level,
+        preprice_histogram=PrepriceHistogramOut(
+            law=hist.law,
+            n=hist.n,
+            bin_start=float(hist.bin_start),
+            bin_width=float(hist.bin_width),
+            counts=hist.counts,
+        ),
         bids=result["bids"],
     )
