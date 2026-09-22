@@ -9,6 +9,7 @@ import DataOverview from "@/pages/DataOverview";
 import ClientStatistics from "@/pages/ClientStatistics";
 import RateDistribution from "@/pages/RateDistribution";
 import DataCollection from "@/pages/DataCollection";
+import Reference from "@/pages/Reference";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -29,6 +30,7 @@ const App = () => (
             <Route path="/clients" element={<ClientStatistics />} />
             <Route path="/distribution" element={<RateDistribution />} />
             <Route path="/collection" element={<DataCollection />} />
+            <Route path="/reference" element={<Reference />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>

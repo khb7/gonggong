@@ -1,4 +1,4 @@
-import { Calculator, BarChart3, Building2, TrendingUp, Database, Activity } from "lucide-react";
+import { Calculator, BarChart3, Building2, TrendingUp, Database, Activity, BookOpen } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
   Sidebar,
@@ -20,6 +20,7 @@ const items = [
   { title: "발주처 통계", url: "/clients", icon: Building2 },
   { title: "사정률·낙찰률 분포", url: "/distribution", icon: TrendingUp },
   { title: "데이터 수집", url: "/collection", icon: Database },
+  { title: "도감", url: "/reference", icon: BookOpen },
 ];
 
 export function AppSidebar() {
